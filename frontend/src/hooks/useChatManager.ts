@@ -25,6 +25,32 @@ export interface ChatMessage {
   extra?: any; // État, instances disponibles, etc
 }
 
+// Traduit une erreur axios technique en message compréhensible pour l'utilisateur.
+function humanizeError(err: any): string {
+  if (!err?.response) {
+    return "Impossible de joindre le serveur. Vérifie ta connexion internet, puis réessaie.";
+  }
+  const status = err.response.status;
+  const detail =
+    err.response.data?.detail || err.response.data?.message || "";
+
+  if (status === 401 || status === 403) {
+    return "Ta session a expiré. Reconnecte-toi pour continuer.";
+  }
+  if (status === 404) {
+    return "Conversation ou session introuvable. Elle a peut-être été supprimée — crée un nouveau chat.";
+  }
+  if (status === 429) {
+    return "Trop de demandes d'affilée. Patiente quelques secondes, puis réessaie.";
+  }
+  if (typeof status === "number" && status >= 500) {
+    return "Le serveur a rencontré une erreur. Réessaie dans quelques instants.";
+  }
+  return (
+    detail || "Une erreur inattendue s'est produite. Réessaie ta demande."
+  );
+}
+
 export function useChatManager() {
   const { id: projectIdParam } = useParams<{ id: string }>();
   const { chatMode, setChatMode } = useChatMode(); // Recuperation du mode Free/DAC
@@ -636,21 +662,18 @@ export function useChatManager() {
         } catch (err: any) {
           console.error("[sendMessage] Free Chat Error:", err);
 
-          // Extraire le message d'erreur détaillé
-          const errorDetail =
-            err?.response?.data?.detail ||
-            err?.response?.data?.message ||
-            err?.message ||
-            "Erreur inconnue";
+          // Message d'erreur compréhensible (au lieu d'un détail technique brut)
+          const friendly = humanizeError(err);
 
-          // Remplacer le message "réfléchit" par l'erreur
+          // Remplacer le message "réfléchit" par l'erreur typée
           setMessages((prev) =>
             prev.map((m) =>
               m.id === thinkingId
                 ? {
                     ...m,
-                    text: `ERR Erreur: ${errorDetail}`,
+                    text: friendly,
                     loading: false,
+                    extra: { kind: "error" },
                   }
                 : m,
             ),
@@ -826,19 +849,16 @@ export function useChatManager() {
         } catch (err: any) {
           console.error("[sendMessage] DAC Mode Error:", err);
 
-          // Extraire le message d'erreur détaillé
-          const errorDetail =
-            err?.response?.data?.detail ||
-            err?.response?.data?.message ||
-            err?.message ||
-            "Erreur inconnue";
+          // Message d'erreur compréhensible (au lieu d'un détail technique brut)
+          const friendly = humanizeError(err);
 
-          // Afficher l'erreur dans le chat
+          // Afficher l'erreur dans le chat, typée "error" pour le rendu visuel
           const errorMsg: ChatMessage = {
             id: "error-" + Date.now(),
             sender: "bot",
-            text: `ERR Erreur serveur: ${errorDetail}`,
+            text: friendly,
             created_at: new Date().toISOString(),
+            extra: { kind: "error" },
           };
           setMessages((prev) => [...prev, errorMsg]);
 

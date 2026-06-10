@@ -18,6 +18,7 @@ import { SmartToy } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import { getMessages } from "../../api/axiosClient";
 import MessageBubble from "./MessageBubble";
+import MessageActions from "./MessageActions";
 import TaskProgress from "../TaskProgress";
 import InstanceSelector from "./InstanceSelector";
 import EmptyState from "./EmptyState";
@@ -44,6 +45,7 @@ interface Props {
   onInstancesSelected?: (selected: number[]) => void;
   onInstanceResponse?: (data: any) => void;
   onCreateNew?: () => void;
+  onQuickAction?: (value: string) => void; // Boutons Confirmer/Annuler/Lancer
 }
 
 type LoadingState = "idle" | "loading" | "success" | "empty" | "error";
@@ -59,6 +61,7 @@ export default function ChatWindow({
   onInstancesSelected,
   onInstanceResponse,
   onCreateNew,
+  onQuickAction,
 }: Props) {
   const { chatMode } = useChatMode(); // Récupérer le mode
   const [messages, setMessages] = useState<Message[]>([]);
@@ -420,6 +423,19 @@ export default function ChatWindow({
                       message={msg}
                       isConsecutive={isConsecutive}
                     />
+
+                    {/* Boutons d'action rapides (Confirmer/Annuler/Lancer) sur la
+                        dernière proposition du bot, pour éviter de taper "ok" en texte */}
+                    {msg.sender !== "user" &&
+                      idx === sortedMessages.length - 1 &&
+                      onQuickAction && (
+                        <MessageActions
+                          state={msg.extra?.state}
+                          actions={msg.extra?.actions}
+                          onAction={onQuickAction}
+                          disabled={Boolean(isTyping)}
+                        />
+                      )}
 
                     {/* Afficher TaskProgress si un task_id est détecté */}
                     {shouldShowTaskProgress && (

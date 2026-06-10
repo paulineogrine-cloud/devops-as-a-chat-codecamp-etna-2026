@@ -1,3 +1,10 @@
+// useExecutionPolling.ts — version modifiée pour le Challenge 6
+//
+// CHANGEMENTS par rapport à l'original :
+//   1. Ajout de `finalStatus` dans le state (null tant que pas terminé)
+//   2. Quand status passe à "completed" ou "failed", finalStatus est mis à jour
+//   3. Ajout de `resetFinalStatus()` pour réinitialiser entre deux exécutions
+
 import { useEffect, useRef, useState } from "react";
 import axiosClient from "../api/axiosClient";
 
@@ -17,6 +24,8 @@ interface ExecutionPollingState {
   progress: number;
   message: string;
   isPolling: boolean;
+  // NOUVEAU — null tant qu'en cours, "completed" | "failed" à la fin
+  finalStatus: "completed" | "failed" | null;
 }
 
 export function useExecutionPolling(
@@ -28,10 +37,17 @@ export function useExecutionPolling(
     progress: 0,
     message: "",
     isPolling: false,
+    finalStatus: null, // NOUVEAU
   });
 
   const intervalRef = useRef<number | null>(null);
   const errorsRef = useRef(0);
+
+  // NOUVEAU — permet au parent de remettre finalStatus à null
+  // (utile quand l'utilisateur ferme la bulle et relance une exécution)
+  const resetFinalStatus = () => {
+    setState((s) => ({ ...s, finalStatus: null }));
+  };
 
   useEffect(() => {
     if (!enabled || !executionId) {
@@ -55,12 +71,18 @@ export function useExecutionPolling(
         errorsRef.current = 0;
 
         if (!cancelled) {
-          setState({
+          setState((s) => ({
+            ...s,
             status,
             progress,
             message,
             isPolling: true,
-          });
+            // NOUVEAU — on mémorise le statut final dès qu'il arrive
+            finalStatus:
+              status === "completed" || status === "failed"
+                ? status
+                : s.finalStatus,
+          }));
         }
 
         if (status === "completed" || status === "failed") {
@@ -78,12 +100,12 @@ export function useExecutionPolling(
       }
     };
 
-    // reset state à chaque nouvel id
     setState({
       status: "running",
       progress: 0,
       message: "Démarrage…",
       isPolling: true,
+      finalStatus: null, // reset à chaque nouvelle exécution
     });
 
     fetchOnce();
@@ -96,5 +118,5 @@ export function useExecutionPolling(
     };
   }, [executionId, enabled]);
 
-  return state;
+  return { ...state, resetFinalStatus };
 }

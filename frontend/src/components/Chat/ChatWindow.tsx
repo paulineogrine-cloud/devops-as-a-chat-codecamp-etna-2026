@@ -20,6 +20,7 @@ import { getMessages } from "../../api/axiosClient";
 import MessageBubble from "./MessageBubble";
 import TaskProgress from "../TaskProgress";
 import InstanceSelector from "./InstanceSelector";
+import AiSummaryBubble from "./AiSummaryBubble";
 import EmptyState from "./EmptyState";
 import ErrorState from "./ErrorState";
 import { useChatMode } from "../../contexts/ChatModeContext";
@@ -66,6 +67,8 @@ export default function ChatWindow({
   const [errorType, setErrorType] = useState<ErrorType>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [hiddenTaskIds, setHiddenTaskIds] = useState<Set<string>>(new Set());
+  // taskId -> { executionId, status } pour afficher la bulle IA après completion
+  const [taskExecutions, setTaskExecutions] = useState<Record<string, { executionId: number; status: 'completed' | 'failed' }>>({}); 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const theme = useTheme();
@@ -446,10 +449,30 @@ export default function ChatWindow({
                             );
                             void loadMessages(true);
                           }}
+                          onFinished={(execId, finalStatus) => {
+                            if (execId) {
+                              setTaskExecutions((prev) => ({ ...prev, [taskId]: { executionId: execId, status: finalStatus } }));
+                            }
+                          }}
                           showLogs={true}
                           compact={false}
                         />
                       </Box>
+                    )}
+
+                    {/* Bulle analyse IA */}
+                    {taskId && taskExecutions[taskId] && (
+                      <AiSummaryBubble
+                        executionId={taskExecutions[taskId].executionId}
+                        executionStatus={taskExecutions[taskId].status}
+                        onClose={() =>
+                          setTaskExecutions((prev) => {
+                            const next = { ...prev };
+                            delete next[taskId];
+                            return next;
+                          })
+                        }
+                      />
                     )}
 
                     {/* OK AuditProgressWidget est rendu au niveau Chat.tsx avec useExecutionStream hook */}

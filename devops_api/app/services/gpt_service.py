@@ -283,3 +283,28 @@ async def generate_free_chat_completion(prompt: str) -> str:
 
     content = _chat_with_retry(messages, model=_DEFAULT_MODEL, temperature=0.5)
     return content.strip()
+
+
+async def analyze_execution_logs(logs: list[str], engine: str) -> dict:
+    """Analyse les logs d'exécution Terraform/Ansible avec GPT et retourne un résumé structuré."""
+    joined = "\n".join(logs[-100:])
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"Tu es un expert DevOps. Analyse ces logs d'exécution {engine} "
+                "et réponds UNIQUEMENT en JSON valide avec exactement ces 3 clés : "
+                "\"status\" (\"success\", \"error\" ou \"warning\"), "
+                "\"summary\" (string, résumé clair en français en 2-3 phrases), "
+                "\"fix\" (string ou null, suggestion de correction si erreur)."
+            ),
+        },
+        {"role": "user", "content": joined},
+    ]
+    if AI_PROVIDER != "openai" or client is None:
+        return {"status": "warning", "summary": "Mode IA mock actif — configurez DAC_AI_PROVIDER=openai.", "fix": None}
+    raw = _chat_with_retry(messages, model=_DEFAULT_MODEL, temperature=0.1)
+    try:
+        return json.loads(_strip_code_fences(raw))
+    except (json.JSONDecodeError, ValueError):
+        return {"status": "warning", "summary": raw[:500], "fix": None}

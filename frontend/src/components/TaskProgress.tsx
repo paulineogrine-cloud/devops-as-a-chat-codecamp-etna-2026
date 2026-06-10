@@ -43,6 +43,8 @@ interface TaskProgressProps {
   taskId: string;
   onComplete?: (result: any) => void;
   onError?: (error: string) => void;
+  /** Appelé quand la tâche se termine (succès ou échec), avec l'execution_id si disponible */
+  onFinished?: (executionId: number | undefined, status: 'completed' | 'failed') => void;
   showLogs?: boolean;
   compact?: boolean;
 }
@@ -51,11 +53,13 @@ const TaskProgress: React.FC<TaskProgressProps> = ({
   taskId,
   onComplete,
   onError,
+  onFinished,
   showLogs = true,
   compact = false
 }) => {
   const [showDetailedLogs, setShowDetailedLogs] = React.useState(true); // Logs visibles par défaut
-  
+  const finishedRef = React.useRef(false);
+
   const {
     taskStatus,
     timeoutReached,
@@ -63,11 +67,24 @@ const TaskProgress: React.FC<TaskProgressProps> = ({
     currentStep,
     logs,
     refreshStatus,
-    // Nouveaux états pour l'amélioration UX
-    connectionState
+    connectionState,
+    executionId,
+    executionIdRef,
   } = useTaskPolling(taskId, {
-    onComplete,
-    onError,
+    onComplete: (result) => {
+      if (onFinished && !finishedRef.current) {
+        finishedRef.current = true;
+        onFinished(executionIdRef.current ?? executionId, 'completed');
+      }
+      onComplete?.(result);
+    },
+    onError: (err) => {
+      if (onFinished && !finishedRef.current) {
+        finishedRef.current = true;
+        onFinished(executionIdRef.current ?? executionId, 'failed');
+      }
+      onError?.(err);
+    },
     onStatusChange: (status) => {
       console.log('Task status updated:', status);
     }

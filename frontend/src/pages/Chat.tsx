@@ -34,6 +34,7 @@ import {
   hasAWSCredentials,
 } from "../utils/awsCredentialsHelper";
 import axiosClient from "../api/axiosClient";
+import AiSummaryBubble from "../components/Chat/AiSummaryBubble";
 import { useState, useEffect, useCallback, useRef } from "react";
 // États qui affichent les composants de setup
 const SETUP_STATES: ChatState[] = [
@@ -82,6 +83,14 @@ export default function ChatPage() {
     null,
   );
   const polling = useExecutionPolling(currentExecutionId, true);
+  const [showAiSummary, setShowAiSummary] = useState(true);
+  //a chaque nouvelle execution reaffiche la bulle
+  useEffect(() => {
+  if (currentExecutionId) {
+    setShowAiSummary(true);
+    polling.resetFinalStatus();
+   }
+  }, [currentExecutionId]);
 
   //  Mode Free/DAC
   const { chatMode, setChatMode } = useChatMode();
@@ -553,7 +562,7 @@ export default function ChatPage() {
         <Box sx={{ flex: "0 0 auto", overflow: "hidden" }}>
           {/* Header professionnel */}
           <ChatHeader
-            sessionId={sessionId}
+            sessionId={sessionId != null ? String(sessionId) : null}
             chatState={chatState}
             onAWSPanelOpen={() => setAwsPanelOpen(true)}
           />
@@ -635,6 +644,16 @@ export default function ChatPage() {
                 message={polling.message}
                 executionId={currentExecutionId}
               />
+            </Box>
+
+            <Box sx={{ px: 2 }}>
+              {showAiSummary && (
+                 <AiSummaryBubble
+                    executionId={currentExecutionId}
+                    executionStatus={polling.finalStatus}
+                    onClose={() => setShowAiSummary(false)}
+                 />
+              )}
             </Box>
 
             {/* Zone de messages scrollable - CRITIQUE: minHeight: 0 */}

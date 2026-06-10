@@ -605,6 +605,11 @@ async def run_execution_by_id(
         )
         
         log.info("[run_execution_by_id] Execution completed successfully")
+        # Inclure execution_id dans le résultat pour que task_manager puisse le stocker
+        if isinstance(result, dict):
+            result["execution_id"] = execution_id
+        else:
+            result = {"execution_id": execution_id}
         return result
         
     except Exception as e:

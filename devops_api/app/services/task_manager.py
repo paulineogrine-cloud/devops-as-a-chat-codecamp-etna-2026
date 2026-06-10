@@ -256,7 +256,11 @@ class TaskManager:
             except Exception as e:
                 logger.error(f"Task {task_id}: serialization failed: {e}", exc_info=True)
                 async_task.result_data = json.dumps({"error": str(e), "result_type": str(type(result))})
-        
+
+        # Lier l'execution_id si présent dans le résultat
+        if isinstance(result, dict) and result.get("execution_id"):
+            async_task.execution_id = result["execution_id"]
+
         completion_log = models.AsyncTaskLog(
             task_id=async_task.id,
             level="success",

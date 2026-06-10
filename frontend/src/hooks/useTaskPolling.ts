@@ -19,6 +19,12 @@ export interface TaskLog {
   progress_percentage?: number;
 }
 
+export interface AiSummary {
+  status: 'success' | 'error' | 'warning';
+  summary: string;
+  fix: string | null;
+}
+
 export interface TaskStatus {
   task_id: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -33,6 +39,7 @@ export interface TaskStatus {
   recent_logs: TaskLog[];
   result_data?: any;
   execution_id?: number;
+  ai_summary?: AiSummary | null;
   // Nouveaux champs pour l'amélioration UX
   substep_details?: {
     substeps?: Array<{
@@ -81,6 +88,7 @@ export const useTaskPolling = (taskId: string | null, options: UseTaskPollingOpt
   const retryTimeoutRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const lastSuccessfulPoll = useRef<number>(Date.now());
+  const executionIdRef = useRef<number | undefined>(undefined);
 
   // Fonction pour calculer l'intervalle de polling adaptatif
   const getAdaptivePollingInterval = useCallback((status?: string, retryCount: number = 0) => {
@@ -133,6 +141,21 @@ export const useTaskPolling = (taskId: string | null, options: UseTaskPollingOpt
         logsCount: status.recent_logs?.length || 0
       });
       
+      // Fetch AI summary AVANT setTaskStatus pour que les callbacks voient la donnée complète
+      if ((status.status === 'completed' || status.status === 'failed') && status.execution_id) {
+        // Mettre à jour le ref synchronement avant les callbacks
+        executionIdRef.current = status.execution_id;
+        try {
+          const execRes = await axiosClient.get(
+            `/executions/${status.execution_id}?analyze=true`,
+            { timeout: 30000 }
+          );
+          status.ai_summary = execRes.data?.ai_summary ?? null;
+        } catch {
+          status.ai_summary = null;
+        }
+      }
+
       setTaskStatus(status);
       setError(null);
       setConnectionState('connected');
@@ -339,6 +362,7 @@ export const useTaskPolling = (taskId: string | null, options: UseTaskPollingOpt
     currentStep: taskStatus?.current_step || '',
     logs: taskStatus?.recent_logs || [],
     executionId: taskStatus?.execution_id,
+    executionIdRef,
     substepDetails: taskStatus?.substep_details
   };
 };

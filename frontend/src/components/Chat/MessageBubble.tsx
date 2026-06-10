@@ -141,11 +141,14 @@ const mdComponents = {
   ),
 };
 import { Person, SmartToy, Schedule } from "@mui/icons-material";
+import { KIND_META, resolveKind } from "./messageKind";
 
 interface Message {
   sender: "user" | "bot";
   text: string;
   timestamp?: string;
+  kind?: string;
+  extra?: { kind?: string; state?: string } | any;
 }
 
 interface MessageBubbleProps {
@@ -182,6 +185,10 @@ export default function MessageBubble({
 }: MessageBubbleProps) {
   const theme = useTheme();
   const isUser = message.sender === "user";
+
+  //  Type sémantique du message bot (info / proposal / executed / error)
+  const kind = !isUser ? resolveKind(message) : null;
+  const meta = kind ? KIND_META[kind] : null;
 
   return (
     <Box
@@ -247,14 +254,22 @@ export default function MessageBubble({
         <Paper
           elevation={0}
           sx={{
+            width: isUser ? undefined : "100%",
             bgcolor: isUser
               ? alpha(theme.palette.primary.main, 0.1)
-              : alpha(theme.palette.secondary.main, 0.05),
+              : meta
+                ? alpha(meta.color, 0.08)
+                : alpha(theme.palette.secondary.main, 0.05),
             border: `1px solid ${
               isUser
                 ? alpha(theme.palette.primary.main, 0.2)
-                : alpha(theme.palette.secondary.main, 0.1)
+                : meta
+                  ? alpha(meta.color, 0.35)
+                  : alpha(theme.palette.secondary.main, 0.1)
             }`,
+            // Bandeau de couleur à gauche pour signaler le type de message bot
+            borderLeft:
+              !isUser && meta ? `4px solid ${meta.color}` : undefined,
             color: "text.primary",
             px: 2.5,
             py: 1.5,
@@ -264,13 +279,45 @@ export default function MessageBubble({
             "&:hover": {
               bgcolor: isUser
                 ? alpha(theme.palette.primary.main, 0.15)
-                : alpha(theme.palette.secondary.main, 0.08),
+                : meta
+                  ? alpha(meta.color, 0.12)
+                  : alpha(theme.palette.secondary.main, 0.08),
               transform: "translateY(-1px)",
               boxShadow: theme.shadows[4],
             },
             transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
+          {/* En-tête de type: Information / Action proposée / Action exécutée / Erreur */}
+          {!isUser && meta && (
+            <Box
+              sx={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 0.5,
+                mb: 1,
+                px: 1,
+                py: 0.25,
+                borderRadius: 1,
+                bgcolor: alpha(meta.color, 0.15),
+                color: meta.color,
+              }}
+            >
+              <meta.Icon sx={{ fontSize: 16 }} />
+              <Typography
+                variant="caption"
+                sx={{
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                  lineHeight: 1,
+                }}
+              >
+                {meta.label}
+              </Typography>
+            </Box>
+          )}
+
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={mdComponents as any}

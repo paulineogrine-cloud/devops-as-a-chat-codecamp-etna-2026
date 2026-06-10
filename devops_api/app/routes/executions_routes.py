@@ -38,6 +38,7 @@ from app.services.idempotency_service import (
     mark_idempotency_failed,
     extract_idempotency_key
 )
+from app.services.log_analyzer_service import analyze_logs
 
 logger = logging.getLogger(__name__)
 
@@ -601,8 +602,9 @@ async def execute_execution(
 
 
 @router.get("/executions/{execution_id}", tags=["Executions"], summary="Voir une exécution")
-def get_execution(
+async def get_execution(
     execution_id: int,
+    analyze: bool = Query(False, description="Inclure un résumé IA des logs (true/false)"),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user)
 ):
@@ -624,6 +626,13 @@ def get_execution(
         progress = 100
         progress_message = progress_message or "Terminé"
 
+    logs = [log.message for log in execution.execution_logs]
+
+    ai_summary = None
+    if analyze and logs:
+        engine = execution.task_type  # 'terraform' ou 'ansible'
+        ai_summary = await analyze_logs(logs, engine)
+
     return {
         "execution_id": execution.id,
         "task_type": execution.task_type,
@@ -631,9 +640,10 @@ def get_execution(
         "target_file": target_file_name,
         "inventory_path": os.path.basename(extra_data.get("inventory_path")) if extra_data.get("inventory_path") else None,
         "manifest_path": os.path.basename(extra_data.get("manifest_path")) if extra_data.get("manifest_path") else None,
-        "logs": [log.message for log in execution.execution_logs],
+        "logs": logs,
         "created_at": execution.created_at.isoformat() if execution.created_at else None,
         "updated_at": execution.updated_at.isoformat() if execution.updated_at else None,
         "progress": progress,
-        "progress_message": progress_message
+        "progress_message": progress_message,
+        "ai_summary": ai_summary,
     }

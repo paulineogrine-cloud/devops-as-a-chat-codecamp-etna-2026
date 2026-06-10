@@ -283,3 +283,52 @@ async def generate_free_chat_completion(prompt: str) -> str:
 
     content = _chat_with_retry(messages, model=_DEFAULT_MODEL, temperature=0.5)
     return content.strip()
+
+#new
+async def analyze_execution_logs(logs: list[str], engine: str) -> dict:
+    """
+    Analyse les logs Terraform/Ansible et retourne un résumé en JSON.
+
+    Args:
+        logs:   Liste de lignes de logs bruts.
+        engine: 'terraform' ou 'ansible'.
+
+    Returns:
+        dict avec les clés : status ('success'|'error'|'warning'), summary (str), fix (str|None).
+    """
+    joined = "\n".join(logs[-100:])  # 100 dernières lignes max
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"Tu es un expert DevOps. Analyse ces logs d'exécution {engine} "
+                "et réponds UNIQUEMENT en JSON valide, sans markdown, avec exactement ces clés : "
+                "{ \"status\": \"success\" | \"error\" | \"warning\", "
+                "\"summary\": \"résumé clair en français pour un développeur débutant\", "
+                "\"fix\": \"action corrective concrète en français si erreur, sinon null\" }"
+            ),
+        },
+        {"role": "user", "content": joined},
+    ]
+
+    # Mode mock : retour structuré minimal
+    if AI_PROVIDER != "openai" or client is None:
+        return {
+            "status": "warning",
+            "summary": "Mode IA mock actif : analyse indisponible sans clé OpenAI.",
+            "fix": None,
+        }
+
+    try:
+        raw = _chat_with_retry(messages, model=_DEFAULT_MODEL, temperature=0.1)
+        raw = _strip_code_fences(raw)
+        return json.loads(raw)
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error(f"[analyze_execution_logs] Impossible de parser la réponse IA : {e}")
+        return {
+            "status": "warning",
+            "summary": "L'IA n'a pas pu analyser les logs (réponse non parseable).",
+            "fix": None,
+        }
+##

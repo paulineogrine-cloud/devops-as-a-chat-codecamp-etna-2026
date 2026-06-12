@@ -94,7 +94,11 @@ GET /executions/{execution_id}/logs?since=<ISO8601>&limit=<1-500>
 - Collapse/expand via bouton
 - Police monospace, hauteur maximale fixée à 280px avec défilement
 
-**Wiring dans `Chat.tsx`** : quand le backend retourne `execution_id_db` dans `data.extra`, le frontend appelle `setCurrentExecutionId(execution_id_db)` qui déclenche le polling.
+**Wiring dans `Chat.tsx`** : quand le backend retourne `execution_id_db` dans `data.extra`, `useChatManager` appelle `setExecutionId(execution_id_db)`. Un `useEffect([executionId])` synchronise ensuite `currentExecutionId` (utilisé par le polling), placé obligatoirement **après** la destructuration de `useChatManager` pour éviter la temporal dead zone.
+
+**Persistance par chat** : un `useRef<Map<chatId, executionId>>` sauvegarde l'`executionId` au changement de chat et le restaure en revenant sur un chat précédent, relançant le polling et réaffichant les logs depuis la DB.
+
+**Stabilité du contexte d'exécution** : `endExecution` dans `ExecutionContext` est déclaré avec `useCallback(fn, [])` (sans dépendance sur `runningExecution`) pour éviter qu'un changement de référence déclenche le cleanup `useEffect` de `Chat.tsx` et remette `executionId` à null juste après son initialisation.
 
 ### Étape 6 — Erreurs enrichies avec correlation_id
 
@@ -102,22 +106,24 @@ GET /executions/{execution_id}/logs?since=<ISO8601>&limit=<1-500>
 
 `ErrorResponse` expose désormais le champ `correlation_id` (nullable). La fonction `make_error()` lit automatiquement le `ContextVar`. L'exception handler global (`500`) inclut le `correlation_id` dans le corps JSON et dans le log d'erreur serveur, permettant de relier immédiatement un crash visible côté client à sa cause dans les logs.
 
-### Correctifs de wiring — Logs pour tous les flows
+### Correctifs de wiring — Logs pour les flows conversationnels
 
 **Fichier :** `devops_api/app/routes/chat_creation_routes.py`
 
-Chaque flow conversationnel crée maintenant un enregistrement `models.Execution` et appelle `log_execution_event()` pour tracer les étapes clés. L'`execution_id` est retourné au frontend via `send_bot_message(..., extra={"execution_id_db": execution.id})`.
+Les flows conversationnels qui passent par `run_execution_by_id` créent un enregistrement `models.Execution` et retournent `execution_id_db` au frontend via `send_bot_message(..., extra={"execution_id_db": execution.id})`. Le frontend déclenche alors le polling automatiquement.
 
-| Flow | task_type | Événements tracés |
-|---|---|---|
-| `create` (Terraform) | `terraform` | started → phase (génération) → phase (apply) → completed / failed |
-| `configure` (Ansible) | `ansible` | started → phase (playbook) → completed / failed |
-| `audit` | `audit` | started → phase → completed / failed |
-| `monitoring` | `monitoring` | started → phase → completed / failed |
-| `ssm status` | `ssm_status` | started → completed / failed |
-| `vpc status` | `vpc_status` | started → completed / failed |
-| `liste des ressources` | `list_resources` | started → completed / failed |
-| `supprimer` | `delete_instances` | started → phase (par instance) → completed / failed |
+| Flow | task_type | Logs UI | Événements tracés |
+|---|---|---|---|
+| `create` (Terraform) | `terraform` | ✗ | Passe par `TaskManager` (retourne `task_id`, pas `execution_id_db`) |
+| `configure` (Ansible) | `ansible` | ✓ | started → phase (playbook) → completed / failed |
+| `audit` | `audit` | ✓ | started → phase → completed / failed |
+| `monitoring` | `monitoring` | ✓ | started → phase → completed / failed |
+| `ssm status` | `ssm_status` | ✓ | started → completed / failed |
+| `vpc status` | `vpc_status` | ✓ | started → completed / failed |
+| `liste des ressources` | `list_resources` | ✓ | started → completed / failed |
+| `supprimer` | `delete_instances` | ✓ | started → phase (par instance) → completed / failed |
+
+> **Note :** Le flow `create` (Terraform) utilise un `TaskManager` asynchrone différent de `run_execution_by_id`. Il ne retourne pas d'`execution_id_db` dans la réponse chat, donc les logs d'exécution ne s'affichent pas dans l'UI pour ce flow.
 
 ---
 
@@ -253,8 +259,11 @@ Les flows conversationnels (`chat_creation_routes.py`) ne passent pas par le ser
 | `frontend/src/hooks/useExecutionLogs.ts` | Nouveau hook — polling incrémental des logs d'exécution |
 | `frontend/src/hooks/useExecutionPolling.ts` | Exposition de `executionLogs` depuis `useExecutionLogs` |
 | `frontend/src/components/Chat/ExecutionLogList.tsx` | Nouveau composant — liste de logs avec icônes par niveau |
+| `frontend/src/components/Chat/MessageActions.tsx` | Nouveau composant — boutons d'action inline (import manquant dans `ChatWindow.tsx`) |
+| `frontend/src/components/Chat/messageKind.ts` | Nouveau fichier — types et métadonnées `MessageKind` (import manquant dans `MessageBubble.tsx`) |
 | `frontend/src/components/TaskProgress.tsx` | Intégration de `ExecutionLogList` |
-| `frontend/src/pages/Chat.tsx` | Extraction de `execution_id_db` depuis `data.extra` → `setCurrentExecutionId` |
+| `frontend/src/contexts/ExecutionContext.tsx` | `endExecution` rendu stable (`useCallback(fn, [])`) pour éviter le cleanup spurieux |
+| `frontend/src/pages/Chat.tsx` | Sync `executionId` → `currentExecutionId` via `useEffect` ; save/restore par chat via `useRef<Map>` |
 | `frontend/src/api/axiosClient.ts` | Ajout de l'en-tête `X-Correlation-ID` dans les requêtes |
 
 ---
@@ -265,7 +274,7 @@ Les flows conversationnels (`chat_creation_routes.py`) ne passent pas par le ser
 2. Se connecter sur `http://localhost:5173`
 3. Créer une session et configurer des crédentials AWS valides
 4. Taper l'un des messages suivants dans le chat :
-   - `"créer une instance nginx"` → flow **create** avec logs Terraform
+   - `"monitoring"` → flow **monitoring** avec logs en temps réel
    - `"configure nginx"` → flow **configure** avec logs Ansible
    - `"ssm status"` → flow **ssm status**
    - `"vpc status"` → flow **vpc status**

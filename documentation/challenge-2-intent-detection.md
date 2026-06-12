@@ -71,6 +71,7 @@ Message utilisateur
 |---------|-----------|
 | `devops_api/app/schemas/intent_schema.py` | Ajout de `SUPPORTED_INTENTS`, `missing_params`, `suggestions`, `is_unknown()` dans `DetectedIntent` |
 | `devops_api/app/services/chat_service.py` | `detect_intent_and_action()` délègue au nouveau moteur via `detect_intent()` |
+| `devops_api/app/routes/chat_creation_routes.py` | Correction de deux bugs de routage (voir section Bugs corrigés) |
 
 ---
 
@@ -182,6 +183,45 @@ Résultat attendu : **60 passed** en < 1 seconde, sans clé OpenAI, sans base de
     "suggestions":      None
 }
 ```
+
+---
+
+## Bugs corrigés dans les routes
+
+Après implémentation du moteur, deux bugs ont été identifiés dans `chat_creation_routes.py` qui empêchaient les nouveaux intents d'être acheminés correctement.
+
+### Bug 1 — `SHOW_MENU` sans effet
+
+Les mots-clés `help`, `aide`, `menu`, `?` sont interceptés en amont par `try_fast_commands()` qui retourne `"SHOW_MENU"`. Mais le handler dans le bloc `awaiting_intent` faisait simplement `pass` et laissait le code continuer vers la détection d'intention de l'ancien catalogue.
+
+```python
+# Avant (ligne ~2785)
+if fast_command == "SHOW_MENU":
+    pass  # ← tombait en cascade vers "Je n'ai pas compris"
+
+# Après
+if fast_command == "SHOW_MENU":
+    return send_bot_message(DAC_HELP_MESSAGE, "awaiting_intent")
+```
+
+### Bug 2 — `free_chat` intent non délégué
+
+Quand l'ancien catalogue détectait `intent_type = "free_chat"` (pour les questions libres, erreurs, etc.), le handler faisait `pass` avec un commentaire "Passer au free_chat handler" — mais n'appelait jamais ce handler. Le code tombait dans le fallback "Je n'ai pas compris l'intention".
+
+```python
+# Avant (ligne ~2944)
+elif detected_intent.intent_type == "free_chat":
+    # Passer au free_chat handler
+    pass  # ← jamais délégué, retombait dans le fallback
+
+# Après
+elif detected_intent.intent_type == "free_chat":
+    return await handle_free_chat_message(
+        db=db, user=user, session_id=session_id, chat_id=chat_id, text=text,
+    )
+```
+
+**Symptôme observé** : taper `help` retournait "Je n'ai pas compris l'intention. Essaie: 'créer', 'configurer', 'auditer' ou 'monitorer'." au lieu du message d'aide DAC.
 
 ---
 

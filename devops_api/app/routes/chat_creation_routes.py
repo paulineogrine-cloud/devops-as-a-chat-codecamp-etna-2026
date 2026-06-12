@@ -2783,8 +2783,7 @@ async def chat_message(
     if session.state == "awaiting_intent":
         # Priorité 1: menu/help
         if fast_command == "SHOW_MENU":
-            # On ne return plus le welcome seul, la commande continue
-            pass
+            return send_bot_message(DAC_HELP_MESSAGE, "awaiting_intent")
 
         # ============================================================================
         #  P0.5.1 — SSM Status Check Intent (priority check before generic intent detection)
@@ -2942,15 +2941,15 @@ async def chat_message(
             )
         
         elif detected_intent.intent_type == "free_chat":
-            # Passer au free_chat handler
-            pass
-        
-        # Fallback si rien ne match
-        return send_bot_message(
-            "Je n'ai pas compris l'intention. Essaie: 'créer', 'configurer', 'auditer' ou 'monitorer'.",
-            "awaiting_intent"
-        )
-        # Fallback si rien ne match
+            return await handle_free_chat_message(
+                db=db,
+                user=user,
+                session_id=session_id,
+                chat_id=chat_id,
+                text=text,
+            )
+
+        # Fallback si rien ne match (intention inconnue ou non gérée)
         return send_bot_message(
             "Je n'ai pas compris l'intention. Essaie: 'créer', 'configurer', 'auditer' ou 'monitorer'.",
             "awaiting_intent"

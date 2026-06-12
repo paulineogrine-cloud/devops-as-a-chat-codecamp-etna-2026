@@ -34,8 +34,9 @@ services:
       FERNET_KEY: ${FERNET_KEY:-2sxscx5ymkGlgp1LBXePogI3ybiEuoAr3m5DYzQfowE=}
       FERNET_SECRET: ${FERNET_SECRET:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       DAC_AI_PROVIDER: ${DAC_AI_PROVIDER:-mock}
-      DAC_AI_MODEL: ${DAC_AI_MODEL:-gpt-4o-mini}
+      DAC_AI_MODEL: ${DAC_AI_MODEL:-mistral-small-latest}
     ports:
       - "8000:8000"
     volumes:

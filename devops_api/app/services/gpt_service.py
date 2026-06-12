@@ -17,14 +17,39 @@ from app.env import load_app_env
 logger = logging.getLogger(__name__)
 load_app_env()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AI_PROVIDER = (os.getenv("DAC_AI_PROVIDER") or ("openai" if OPENAI_API_KEY else "mock")).lower()
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
-# Client OpenAI (sync). En mode CodeCamp, le backend doit pouvoir demarrer sans cle IA.
-client = OpenAI(api_key=OPENAI_API_KEY) if AI_PROVIDER == "openai" and OPENAI_API_KEY else None
+# Provider resolution: explicit env var > auto-detect from available keys > mock
+_raw_provider = (os.getenv("DAC_AI_PROVIDER") or "").lower()
+if _raw_provider:
+    AI_PROVIDER = _raw_provider
+elif OPENAI_API_KEY:
+    AI_PROVIDER = "openai"
+elif MISTRAL_API_KEY:
+    AI_PROVIDER = "mistral"
+else:
+    AI_PROVIDER = "mock"
 
-# Modele configurable. DAC_AI_MODEL est le nom expose dans le rendu CodeCamp.
-_DEFAULT_MODEL = os.getenv("DAC_AI_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+# Build client — Mistral uses the OpenAI-compatible endpoint, no extra package needed.
+if AI_PROVIDER == "openai" and OPENAI_API_KEY:
+    client = OpenAI(api_key=OPENAI_API_KEY)
+elif AI_PROVIDER == "mistral" and MISTRAL_API_KEY:
+    client = OpenAI(
+        api_key=MISTRAL_API_KEY,
+        base_url="https://api.mistral.ai/v1",
+    )
+else:
+    client = None
+
+# Default model per provider. Can be overridden with DAC_AI_MODEL.
+_DEFAULT_MODEL = (
+    os.getenv("DAC_AI_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or ("mistral-small-latest" if AI_PROVIDER == "mistral" else "gpt-4o-mini")
+)
+
+logger.info("AI provider: %s | model: %s | client: %s", AI_PROVIDER, _DEFAULT_MODEL, "ready" if client else "mock")
 
 
 def _mock_response(messages: list[dict], response_format: Optional[Dict[str, Any]] = None) -> str:
@@ -38,17 +63,17 @@ def _mock_response(messages: list[dict], response_format: Optional[Dict[str, Any
     system_message = next((m.get("content", "") for m in messages if m.get("role") == "system"), "")
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
     if "convertis des demandes" in system_message:
-        raise RuntimeError("Mode IA mock actif: generation IA indisponible sans cle OpenAI.")
+        raise RuntimeError("Mode IA mock actif: generation IA indisponible sans cle configuree.")
 
     if "Réponse (en français)" in last_user or "répond naturellement" in system_message:
         return (
-            "Mode IA mock actif: aucune cle OpenAI n'est configuree. "
-            "Je peux aider a lancer DAC, mais les reponses IA avancees necessitent DAC_AI_PROVIDER=openai."
+            "Mode IA mock actif: aucune cle API n'est configuree. "
+            "Configure DAC_AI_PROVIDER=mistral + MISTRAL_API_KEY (ou openai + OPENAI_API_KEY) pour activer l'IA."
         )
 
     return (
-        "Mode IA mock actif: aucune cle OpenAI n'est configuree. "
-        "Configure DAC_AI_PROVIDER=openai et OPENAI_API_KEY pour activer les reponses IA."
+        "Mode IA mock actif: aucune cle API n'est configuree. "
+        "Configure DAC_AI_PROVIDER=mistral + MISTRAL_API_KEY pour activer les reponses IA."
     )
 
 
@@ -90,11 +115,11 @@ def _chat_with_retry(messages: list[dict], model: Optional[str] = None,
     model = model or _DEFAULT_MODEL
     last_err = None
 
-    if AI_PROVIDER != "openai" or client is None:
+    if AI_PROVIDER not in {"openai", "mistral"} or client is None:
         return _mock_response(messages, response_format=response_format)
-    
+
     def _make_openai_call():
-        """Wrapper pour appel OpenAI (appelé via ThreadPoolExecutor)."""
+        """Wrapper pour appel API (OpenAI ou Mistral, même interface)."""
         kwargs = {
             "model": model,
             "messages": messages,
@@ -116,32 +141,28 @@ def _chat_with_retry(messages: list[dict], model: Optional[str] = None,
                 return content
             
         except FuturesTimeoutError:
-            last_err = f"OpenAI timeout ({timeout_seconds}s)"
-            logger.warning(f" OpenAI timeout, retry {attempt}/{max_retries}")
+            last_err = f"AI timeout ({timeout_seconds}s)"
+            logger.warning(f"AI timeout [{AI_PROVIDER}], retry {attempt}/{max_retries}")
             if attempt < max_retries:
                 delay = min(2 ** attempt + random.random(), 10)
                 time.sleep(delay)
-            # Après le dernier timeout, on sort
-            
+
         except (RateLimitError, APIConnectionError) as e:
             last_err = e
-            # backoff exponentiel jitter
             delay = min(2 ** attempt + random.random(), 20)
-            logger.warning(f"OpenAI transient error ({type(e).__name__}), retry {attempt}/{max_retries} in {delay:.1f}s")
+            logger.warning(f"AI transient error [{AI_PROVIDER}] ({type(e).__name__}), retry {attempt}/{max_retries} in {delay:.1f}s")
             time.sleep(delay)
-            
+
         except BadRequestError as e:
-            # Prompt non valide / réponse trop longue / format impossible, on log et on remonte
-            logger.error(f"OpenAI bad request: {e}")
+            logger.error(f"AI bad request [{AI_PROVIDER}]: {e}")
             raise
-            
+
         except Exception as e:
             last_err = e
-            logger.error(f"OpenAI unexpected error: {e}", exc_info=True)
+            logger.error(f"AI unexpected error [{AI_PROVIDER}]: {e}", exc_info=True)
             break
-    
-    # Si on est ici, tous les retries ont échoué
-    raise RuntimeError(f"Echec d'appel OpenAI après {max_retries} tentatives: {last_err}")
+
+    raise RuntimeError(f"Echec appel IA [{AI_PROVIDER}] après {max_retries} tentatives: {last_err}")
 
 
 # -----------------------

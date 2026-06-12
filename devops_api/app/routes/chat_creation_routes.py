@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app import models, database
 from app.security.rate_limit import limiter
 from app.auth import get_current_user
-from app.services.chat_service import detect_intent_type, detect_intent_and_action, extract_params_from_text
+from app.services.chat_service import detect_intent_type, detect_intent_and_action, extract_params_from_text, generate_free_chat_response
 from app.services.aws_credentials_service import get_user_aws_credentials, has_user_aws_credentials, validate_aws_credentials
 from app.services.aws_sync_service import sync_aws_instances_to_db
 from app.services.p04_p05_chat_intents import detect_ssm_check_intent
@@ -2941,13 +2941,11 @@ async def chat_message(
             )
         
         elif detected_intent.intent_type == "free_chat":
-            return await handle_free_chat_message(
-                db=db,
-                user=user,
-                session_id=session_id,
-                chat_id=chat_id,
-                text=text,
-            )
+            # Use generate_free_chat_response directly so the reply is wrapped by
+            # send_bot_message and stays in the DAC response format the frontend expects.
+            # (handle_free_chat_message returns a free-mode payload incompatible with DAC.)
+            bot_text = await generate_free_chat_response(user_message=text)
+            return send_bot_message(bot_text, "awaiting_intent")
 
         # Fallback si rien ne match (intention inconnue ou non gérée)
         return send_bot_message(

@@ -166,24 +166,32 @@ export default function ChatPage() {
   const selectedChatId = normalizedChatId;
   const sessionId = normalizedSessionId;
 
-  //  Cleanup du stream quand on change de chat ou que le composant se démonte
+  // Persistance de l'executionId par chat (mémoire en session)
+  const executionIdLatestRef = useRef<string | null>(null);
+  const prevChatIdRef = useRef<number | null>(null);
+  const executionIdByChatRef = useRef<Map<number, string | null>>(new Map());
+
+  // Tenir la ref à jour pour éviter les stale closures dans l'effet ci-dessous
   useEffect(() => {
-    return () => {
-      // Quand on change de chat, nettoyer l'exécution en cours
-      if (executionId) {
-        console.log("[Chat]  Nettoyage stream au changement de chat");
-        setExecutionId(null);
+    executionIdLatestRef.current = executionId;
+  }, [executionId]);
+
+  // Sauvegarde l'executionId du chat courant avant de changer, et restaure
+  // celui du nouveau chat (permet de retrouver les logs en revenant sur un chat)
+  useEffect(() => {
+    if (prevChatIdRef.current !== null) {
+      executionIdByChatRef.current.set(prevChatIdRef.current, executionIdLatestRef.current);
+      if (executionIdLatestRef.current) {
         setAuditRunning(false);
         endExecution();
       }
-    };
-  }, [
-    normalizedChatId,
-    executionId,
-    setExecutionId,
-    setAuditRunning,
-    endExecution,
-  ]);
+    }
+    const saved = normalizedChatId !== null
+      ? (executionIdByChatRef.current.get(normalizedChatId) ?? null)
+      : null;
+    setExecutionId(saved);
+    prevChatIdRef.current = normalizedChatId;
+  }, [normalizedChatId, setExecutionId, setAuditRunning, endExecution]);
 
   const isExecuting = ["executing", "running", "in_progress"].includes(
     chatState ?? "",

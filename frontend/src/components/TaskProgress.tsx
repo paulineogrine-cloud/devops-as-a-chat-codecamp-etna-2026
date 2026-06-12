@@ -31,6 +31,8 @@ import {
   Circle as CircleIcon
 } from '@mui/icons-material';
 import { useTaskPolling, type TaskLog } from '../hooks/useTaskPolling';
+import ExecutionLogList from './Chat/ExecutionLogList';
+import { useExecutionLogs } from '../hooks/useExecutionLogs';
 import { 
   AWS_DEPLOYMENT_STEPS,
   getCurrentStep,
@@ -41,6 +43,7 @@ import {
 
 interface TaskProgressProps {
   taskId: string;
+  executionId?: number | null;
   onComplete?: (result: any) => void;
   onError?: (error: string) => void;
   showLogs?: boolean;
@@ -49,12 +52,14 @@ interface TaskProgressProps {
 
 const TaskProgress: React.FC<TaskProgressProps> = ({
   taskId,
+  executionId = null,
   onComplete,
   onError,
   showLogs = true,
   compact = false
 }) => {
   const [showDetailedLogs, setShowDetailedLogs] = React.useState(true); // Logs visibles par défaut
+  const { logs: execLogs, done: execLogsDone } = useExecutionLogs(executionId);
   
   const {
     taskStatus,
@@ -420,6 +425,13 @@ const TaskProgress: React.FC<TaskProgressProps> = ({
             </Typography>
           )}
         </Box>
+
+        {/* Logs d'exécution DB (execution_logs) */}
+        {executionId && (
+          <Box sx={{ mb: 2 }}>
+            <ExecutionLogList logs={execLogs} done={execLogsDone} />
+          </Box>
+        )}
 
         {/* Enhanced Logs section */}
         {showLogs && (

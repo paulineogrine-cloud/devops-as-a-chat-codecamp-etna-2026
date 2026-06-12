@@ -4,29 +4,12 @@
 import logging
 import re
 
-from app.paths import LOGS_DIR
-logger = logging.getLogger(__name__)
-
 import os
 import json
 import logging
 from app.services.gpt_service import generate_free_chat_completion
 
-#  Répertoire des logs
-BASE_LOG_DIR = LOGS_DIR
-os.makedirs(BASE_LOG_DIR, exist_ok=True)
-LOG_FILE_PATH = os.path.join(BASE_LOG_DIR, "chat_service.log")
-
-#  Création du logger
-logger = logging.getLogger("chat_service")
-logger.setLevel(logging.INFO)
-
-#  Évite les handlers en double
-if not logger.hasHandlers():
-    handler = logging.FileHandler(LOG_FILE_PATH)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+logger = logging.getLogger(__name__)
 
 #  Safe JSON loader for GPT responses
 def safe_json_loads(text: str) -> dict:
@@ -49,7 +32,7 @@ def safe_json_loads(text: str) -> dict:
             raise ValueError("no_json_object_found")
         return json.loads(cleaned[start:end+1])
     except Exception as e:
-        logger.error(f"Failed to parse JSON: {e}, text was: {text[:200]}")
+        logger.error("Failed to parse JSON: %s, text was: %s", e, text[:200])
         raise ValueError(f"JSON parsing failed: {e}")
 
 # Challenge 2 — unified intent detection engine (replaces Ubuntu/service fast-tracks + GPT flow)
@@ -66,11 +49,11 @@ async def detect_intent_and_action(request_text: str) -> dict:
 
     Retourne un dict backward-compatible avec chat_creation_routes.
     """
-    logger.info("detect_intent_and_action: '%s'", request_text)
+    logger.debug("detect_intent_and_action: '%s'", request_text)
 
     result = detect_intent(request_text)
 
-    logger.info(
+    logger.debug(
         "Intent détecté: intent=%s action=%s confidence=%.2f params=%s",
         result.intent, result.action, result.confidence, result.params,
     )

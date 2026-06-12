@@ -600,6 +600,53 @@ async def execute_execution(
         raise HTTPException(status_code=500, detail=f"Erreur exécution : {str(e)}")
 
 
+@router.get("/executions/{execution_id}/logs", tags=["Executions"], summary="Logs temps réel d'une exécution")
+def get_execution_logs(
+    execution_id: int,
+    since: Optional[str] = Query(None, description="ISO8601 — ne retourner que les logs après cette date"),
+    limit: int = Query(100, ge=1, le=500, description="Nombre maximum de logs à retourner"),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    execution = db.query(models.Execution).filter_by(id=execution_id, user_id=user.id).first()
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution introuvable.")
+
+    query = (
+        db.query(models.ExecutionLog)
+        .filter_by(execution_id=execution_id)
+    )
+
+    if since:
+        try:
+            from datetime import datetime
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            query = query.filter(models.ExecutionLog.created_at > since_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Paramètre 'since' invalide (attendu ISO8601).")
+
+    logs = query.order_by(models.ExecutionLog.created_at.asc()).limit(limit).all()
+
+    done = execution.status in {"completed", "failed"}
+
+    return {
+        "execution_id": execution_id,
+        "status": execution.status,
+        "done": done,
+        "logs": [
+            {
+                "id": log.id,
+                "event": log.event,
+                "level": log.level or "INFO",
+                "message": log.message,
+                "correlation_id": log.correlation_id,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log in logs
+        ],
+    }
+
+
 @router.get("/executions/{execution_id}", tags=["Executions"], summary="Voir une exécution")
 def get_execution(
     execution_id: int,

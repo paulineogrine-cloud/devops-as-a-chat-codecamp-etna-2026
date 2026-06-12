@@ -1,7 +1,52 @@
 from __future__ import annotations
 
-from typing import Any
+import json
+import logging
+import logging.handlers
+import os
+import sys
 from datetime import datetime, timezone
+from typing import Any, Optional
+
+class JSONFormatter(logging.Formatter):
+    """Émet chaque log en une seule ligne JSON parseable."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        try:
+            from app.core.context import correlation_id_var
+            cid = correlation_id_var.get("")
+        except Exception:
+            cid = ""
+
+        obj: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if cid:
+            obj["correlation_id"] = cid
+        if record.exc_info:
+            obj["exc"] = self.formatException(record.exc_info)
+        return json.dumps(obj, ensure_ascii=False)
+
+
+def setup_logging(level: Optional[str] = None) -> None:
+    """Configure le logger root avec JSONFormatter une seule fois au démarrage."""
+    if level is None:
+        level = os.getenv("DAC_LOG_LEVEL") or os.getenv("LOG_LEVEL") or "info"
+    numeric = getattr(logging, level.upper(), logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(JSONFormatter())
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(numeric)
+
+
+def get_logger(name: str) -> logging.Logger:
+    return logging.getLogger(name)
+
 
 SENSITIVE_KEYS = {
     "access_key_id",

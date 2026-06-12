@@ -14,6 +14,7 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
     FERNET_KEY: str = os.getenv("FERNET_KEY", "").strip()
     FERNET_SECRET: str = FERNET_KEY or os.getenv("FERNET_SECRET", "").strip()
+    DAC_LOG_LEVEL: str = (os.getenv("DAC_LOG_LEVEL") or os.getenv("LOG_LEVEL") or "info").strip().lower()
 
     def validate(self):
         missing = [attr for attr in [

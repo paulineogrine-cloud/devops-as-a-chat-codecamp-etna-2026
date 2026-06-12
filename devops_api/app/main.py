@@ -4,44 +4,25 @@
 # app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import os
 import logging
 import threading
 
 from app.env import load_app_env
+load_app_env()
+
 from app.settings import settings
+from app.utils.logging_utils import setup_logging
+setup_logging(settings.DAC_LOG_LEVEL)
+
 from app.database import engine
 from app.paths import ensure_dirs            # OK crée /data/generated_files + sous-dossiers
 from app.maintenance import janitor_loop     # OK ménage périodique (rotation + purge)
 from app.services.scheduler import init_scheduler, shutdown_scheduler  # OK P0.1 auto-sync
 from app.security.rate_limit import setup_rate_limiting  # OK P0.2 rate limiting centralisé
 
-# 
-# Env & logs
-# 
-load_app_env()
-
-# Configure logging avec fichier centralisé dans generated_files
-from pathlib import Path
-from datetime import datetime, timezone
-
-log_dir = Path(os.path.join(os.path.dirname(__file__), "../generated_files/api_logs"))
-log_dir.mkdir(parents=True, exist_ok=True)
-log_file = log_dir / f"api_{datetime.now().strftime('%Y%m%d')}.log"
-
-# Configuration logging avec fichier + console
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(name)s:%(message)s',
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
-logger.info(f" Logging vers: {log_file}")
-logger.info(f"BACKEND_BASE_URL = {settings.BACKEND_BASE_URL}")
-logger.info(f"DATABASE URL = {engine.url}")
+logger.info("BACKEND_BASE_URL = %s", settings.BACKEND_BASE_URL)
+logger.info("DATABASE URL = %s", engine.url)
 
 # 
 # Imports des routes
@@ -78,23 +59,39 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# Middleware correlation_id — génère un UUID par requête et l'injecte dans les logs
+@app.middleware("http")
+async def correlation_id_middleware(request, call_next):
+    import uuid
+    from app.core.context import correlation_id_var
+    cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+    token = correlation_id_var.set(cid)
+    try:
+        response = await call_next(request)
+    finally:
+        correlation_id_var.reset(token)
+    response.headers["X-Correlation-ID"] = cid
+    return response
+
+
 # Dev CORS fallback (ensures headers on error responses and exceptions)
 @app.middleware("http")
 async def add_dev_cors_headers(request, call_next):
     from fastapi.responses import JSONResponse
-    
+    from app.core.context import correlation_id_var
+
     origin = request.headers.get("origin")
-    
+
     try:
         response = await call_next(request)
     except Exception as e:
-        # En cas d'exception, créer une réponse d'erreur avec CORS
-        logger.error(f"Exception non gérée: {e}", exc_info=True)
+        cid = correlation_id_var.get("")
+        logger.error("Exception non gérée: %s (correlation_id=%s)", e, cid, exc_info=True)
         response = JSONResponse(
             status_code=500,
-            content={"detail": f"Erreur interne: {str(e)}"}
+            content={"detail": f"Erreur interne: {str(e)}", "correlation_id": cid or None}
         )
-    
+
     # Ajouter les headers CORS pour localhost
     if origin in {"http://localhost:5173", "http://127.0.0.1:5173"}:
         response.headers["Access-Control-Allow-Origin"] = origin
@@ -102,7 +99,7 @@ async def add_dev_cors_headers(request, call_next):
         response.headers["Access-Control-Allow-Methods"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "*"
         response.headers["Vary"] = "Origin"
-    
+
     return response
 
 # CORS

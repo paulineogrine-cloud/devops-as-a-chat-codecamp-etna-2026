@@ -64,6 +64,15 @@ axiosClient.interceptors.request.use((config) => {
     else removeAuthHeader(config);
   }
 
+  // Injecter X-Correlation-ID pour la corrélation avec les logs serveur
+  const cid = crypto.randomUUID();
+  if (!config.headers) config.headers = {} as any;
+  if (typeof (config.headers as any).set === "function") {
+    (config.headers as any).set("X-Correlation-ID", cid);
+  } else {
+    (config.headers as any)["X-Correlation-ID"] = cid;
+  }
+
   return config;
 });
 

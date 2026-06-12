@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import axiosClient from "../api/axiosClient";
+import { useExecutionLogs, type ExecutionLogEntry } from "./useExecutionLogs";
 
+export type { ExecutionLogEntry };
 export type ExecutionStatus = "pending" | "running" | "completed" | "failed";
 
 export interface ExecutionSnapshot {
@@ -96,5 +98,9 @@ export function useExecutionPolling(
     };
   }, [executionId, enabled]);
 
-  return state;
+  // Logs temps réel de l'exécution (nouveaux depuis étape 4)
+  const done = state.status === "completed" || state.status === "failed";
+  const executionLogs = useExecutionLogs(executionId, { enabled, done });
+
+  return { ...state, executionLogs };
 }

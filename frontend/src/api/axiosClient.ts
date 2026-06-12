@@ -216,7 +216,10 @@ export const sendChatMessage = async (
     sender: "user",
     text: message,
   };
-  const res = await axiosClient.post("/chat_creation/chat_message", payload);
+  // Terraform peut prendre 1-2 minutes pour provisionner des ressources AWS.
+  const res = await axiosClient.post("/chat_creation/chat_message", payload, {
+    timeout: 60000,
+  });
   return res.data;
 };
 

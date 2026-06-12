@@ -6,74 +6,73 @@ DAC signifie DevOps-as-a-Chat. Le projet permet de piloter des actions DevOps vi
 
 ## 2. Challenge choisi
 
-Challenge 3: preview et confirmation avant execution.
+Challenge 5: amelioration des logs et du suivi temps reel.
 
-Objectif de l'equipe: rendre un deploiement AWS reel plus comprehensible, plus sur et plus demonstrable.
+Choix personnel: rendre DAC observable, comprendre ce qui se passe pendant une action cloud, et pouvoir diagnostiquer une erreur sans fouiller les logs serveur a la main.
 
 ## 3. Probleme initial
 
-- Les actions cloud peuvent etre sensibles.
-- Les erreurs AWS sont difficiles a comprendre.
-- Une cle AWS expiree faisait echouer Terraform tardivement.
-- Un debutant ne sait pas toujours quoi corriger.
+- Les logs backend etaient du texte brut non parseable.
+- Les niveaux DEBUG/INFO etaient melanges, les evenements metier noyes dans le bruit.
+- Aucune correlation entre un message utilisateur, l'intention detectee et l'action declenchee.
+- L'utilisateur ne voyait rien pendant l'execution d'une action (create, configure, suppression...).
+- Un crash 500 renvoyait un message generique sans identifiant pour retrouver la cause.
+- Les flows configure, ssm status, vpc status, liste des ressources et supprimer ne produisaient aucun log visible dans l'UI.
 
 ## 4. Solution
 
-- Validation AWS via STS avant sauvegarde.
-- Validation AWS avant lancement CREATE.
-- Mode ecole limite a AWS et a un petit nombre de VM.
-- Messages d'erreur plus explicites.
-- Procedure de lancement documentee.
+- Logger centralise JSON structure (une ligne JSON par log, parseable par jq ou tout log shipper).
+- Niveaux de logs coherents : DEBUG pour les traces internes, INFO pour les evenements metier.
+- Correlation via ContextVar : un UUID par requete HTTP, injecte dans chaque log et persiste en base.
+- Endpoint GET /executions/{id}/logs avec parametre since pour le polling incremental.
+- Hook useExecutionLogs et composant ExecutionLogList : affichage temps reel dans le chat, icone par niveau, auto-scroll.
+- Logs d'execution pour tous les flows conversationnels (8 flows couverts).
+- ErrorResponse expose le correlation_id pour relier un crash 500 cote client a sa cause dans les logs serveur.
 
 ## 5. Architecture modifiee
 
-Frontend React -> FastAPI -> detection intention -> generation Terraform -> validation credentials -> execution Terraform -> retour chat.
+Frontend React -> FastAPI (middleware correlation_id) -> detection intention -> action cloud -> log_execution_event() -> ExecutionLog en base.
+
+Frontend : useExecutionLogs poll GET /executions/{id}/logs toutes les 2s -> ExecutionLogList affiche les etapes en temps reel.
 
 ## 6. Demo nominale
 
 Prompt:
 
 ```text
-cree une instance EC2 Ubuntu
+créer une instance nginx
 ```
 
-Parametres:
-
-```text
-AWS Ubuntu 22.04 t2.micro eu-west-1
-```
-
-Confirmation:
-
-```text
-ok
-```
-
-Resultat attendu: Terraform genere et lance la creation AWS.
+Resultat attendu: le composant "Logs d'execution" apparait dans le chat et affiche les etapes started -> phase (generation Terraform) -> phase (apply) -> completed en temps reel.
 
 ## 7. Demo erreur
 
-Utiliser une cle AWS invalide.
+Prompt:
 
-Resultat attendu: DAC indique que les credentials sont invalides ou expires et renvoie vers l'onboarding AWS.
+```text
+supprimer
+```
+
+Puis donner un ID d'instance sans credentials provider associes.
+
+Resultat attendu: les logs affichent started -> phase (tentative) -> phase (erreur 404 WARNING) -> failed. L'erreur est visible et comprehensible sans acces aux logs serveur.
 
 ## 8. Difficultes
 
-- Comprendre l'architecture existante.
-- Garder un changement limite dans un projet alpha.
-- Rendre les erreurs cloud lisibles.
-- Eviter les couts ou actions dangereuses.
+- Le code backend est bake dans l'image Docker (pas de volume) : chaque modification Python necessite docker compose build.
+- Les flows conversationnels n'utilisent pas le service d'execution asynchrone : log_execution_event() devait etre appele directement dans chaque handler.
+- Propagation du correlation_id en contexte async : threading.local ne fonctionne pas, ContextVar etait obligatoire.
 
 ## 9. Limites
 
-- AWS uniquement pour le parcours ecole.
-- Les droits IAM doivent etre prepares.
-- Le destroy doit etre verifie manuellement si le workflow n'est pas utilise.
+- Pas de streaming serveur (SSE/WebSocket) : delai de polling jusqu'a 2 secondes.
+- Les logs d'execution restent en base indefiniment (pas de politique de retention).
+- L'export vers un systeme centralise (Loki, Datadog) n'est pas implemente.
+- La suppression retourne 404 si l'instance n'a pas d'entree provider avec credentials en base (probleme pre-existant, non introduit par ce challenge).
 
 ## 10. Perspectives
 
-- Dashboard d'executions.
-- Estimation de cout.
-- Meilleur destroy guide.
-- IA pour expliquer les erreurs Terraform.
-- Support EtnaCloud plus specifique.
+- Server-Sent Events (SSE) pour remplacer le polling.
+- Centralisation vers Loki + Grafana ou Datadog.
+- Politique de retention des logs (job periodique).
+- Integration OpenTelemetry pour propager le correlation_id dans les sous-processus Terraform/Ansible.

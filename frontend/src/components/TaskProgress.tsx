@@ -32,6 +32,8 @@ import {
   Circle as CircleIcon
 } from '@mui/icons-material';
 import { useTaskPolling, type TaskLog } from '../hooks/useTaskPolling';
+import { useExecutionLogs } from '../hooks/useExecutionLogs';
+import ExecutionLogList from './Chat/ExecutionLogList';
 import { 
   AWS_DEPLOYMENT_STEPS,
   getCurrentStep,
@@ -64,14 +66,21 @@ const TaskProgress: React.FC<TaskProgressProps> = ({
     currentStep,
     logs,
     refreshStatus,
-    // Nouveaux états pour l'amélioration UX
-    connectionState
+    connectionState,
+    executionId,
+    isFinished,
   } = useTaskPolling(taskId, {
     onComplete,
     onError,
     onStatusChange: (status) => {
       console.log('Task status updated:', status);
     }
+  });
+
+  // Logs d'exécution temps réel (depuis le modèle ExecutionLog en DB)
+  const executionLogs = useExecutionLogs(executionId ?? null, {
+    enabled: !!executionId,
+    done: isFinished,
   });
 
 
@@ -418,6 +427,16 @@ const TaskProgress: React.FC<TaskProgressProps> = ({
             </Typography>
           )}
         </Box>
+
+        {/* Logs d'exécution temps réel (depuis DB ExecutionLog) */}
+        {showLogs && executionId && (
+          <Box mb={2}>
+            <ExecutionLogList
+              logs={executionLogs.logs}
+              isPolling={executionLogs.isPolling}
+            />
+          </Box>
+        )}
 
         {/* Enhanced Logs section */}
         {showLogs && (

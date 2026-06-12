@@ -21,8 +21,10 @@ class ExecutionLog(Base):
         nullable=True
     )
 
-    event = Column(String, nullable=False)  # ex: started, completed, failed
-    message = Column(Text, nullable=True)   # OK toujours du texte (str ou JSON.stringify)
+    event = Column(String, nullable=False)       # ex: started, completed, failed
+    message = Column(Text, nullable=True)        # toujours du texte (str ou JSON.stringify)
+    level = Column(String(16), nullable=True, default="INFO")  # DEBUG/INFO/WARNING/ERROR
+    correlation_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relations

@@ -1194,7 +1194,7 @@ async def generate_terraform(
 
         if domain == "database":
             if provider_lcl == "aws":
-                return "- Domaine: database (AWS)\n- RDS Postgres minimal.\n"
+                return "- Domaine: database (AWS)\n- RDS Postgres free tier: instance_class=db.t2.micro, allocated_storage=20, engine=postgres, single-AZ (multi_az=false), storage_type=gp2, skip_final_snapshot=true.\n"
             if provider_lcl == "azure":
                 return "- Domaine: database (Azure)\n- Flexible Server Postgres.\n"
             return "- Domaine: database (GCP)\n- Cloud SQL Postgres.\n"
@@ -1229,7 +1229,7 @@ async def generate_terraform(
 
         if domain == "container_orchestration":
             if provider_lcl == "aws":
-                return "- Domaine: container_orchestration (AWS)\n- ECS Fargate cluster minimal.\n"
+                return "- Domaine: container_orchestration (AWS)\n- ECS EC2 cluster (launch_type=EC2) avec une instance t2.micro. IMPORTANT: ECS Fargate n'est PAS free tier, utiliser launch_type EC2 avec t2.micro.\n"
             if provider_lcl == "azure":
                 return "- Domaine: container_orchestration (Azure)\n- Container Apps env.\n"
             return "- Domaine: container_orchestration (GCP)\n- GKE minimal.\n"

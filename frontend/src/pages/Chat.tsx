@@ -26,6 +26,7 @@ import CredentialsForm from "../components/Chat/CredentialsForm";
 import InstanceSelector from "../components/Chat/InstanceSelector";
 import AWSResourcePanel from "../components/AWS/AWSResourcePanel";
 import AuditProgressWidget from "../components/AuditProgressWidget";
+import ExecutionLogList from "../components/Chat/ExecutionLogList";
 import { useExecution } from "../contexts/ExecutionContext";
 import { useExecutionPolling } from "../hooks/useExecutionPolling";
 import type { ChatState } from "../states/chatStates";
@@ -148,6 +149,13 @@ export default function ChatPage() {
     normalizedChatId,
     normalizedSessionId,
   ]);
+
+  // Synchroniser currentExecutionId depuis useChatManager (sendMessage aussi retourne execution_id)
+  useEffect(() => {
+    if (executionId) {
+      setCurrentExecutionId(Number(executionId));
+    }
+  }, [executionId]);
 
   // Trouver le chat sélectionné selon la structure API (chat_id, session_id)
   const selectedChat = chats.find(
@@ -640,6 +648,17 @@ export default function ChatPage() {
                 message={polling.message}
                 executionId={currentExecutionId}
               />
+              {/* Logs d'exécution temps réel (DB ExecutionLog) */}
+              {currentExecutionId &&
+                (polling.executionLogs.logs.length > 0 ||
+                  polling.executionLogs.isPolling) && (
+                  <Box sx={{ mt: 1 }}>
+                    <ExecutionLogList
+                      logs={polling.executionLogs.logs}
+                      isPolling={polling.executionLogs.isPolling}
+                    />
+                  </Box>
+                )}
             </Box>
 
             {/* Zone de messages scrollable - CRITIQUE: minHeight: 0 */}

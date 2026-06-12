@@ -392,11 +392,15 @@ export default function ChatWindow({
               const isConsecutive =
                 idx > 0 && sortedMessages[idx - 1].sender === msg.sender;
 
-              // Détecter les task_id dans les messages du bot
+              // Détecter les task_id dans les messages du bot (texte ou extra.task_id)
               const taskIdMatch =
                 msg.sender !== "user" &&
                 msg.text.match(/ID de tâche: `([a-f0-9\-]{36})`/);
-              const taskId = taskIdMatch ? taskIdMatch[1] : null;
+              const taskId: string | null =
+                (taskIdMatch ? taskIdMatch[1] : null) ??
+                (msg.sender !== "user" && typeof msg.extra?.task_id === "string"
+                  ? msg.extra.task_id
+                  : null);
 
               return (
                 <Fade in key={idx} timeout={300 + idx * 50}>

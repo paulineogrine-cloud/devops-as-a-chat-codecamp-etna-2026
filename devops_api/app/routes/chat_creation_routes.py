@@ -25,9 +25,15 @@ from app.auth import get_current_user
 from app.services.chat_service import detect_intent_type, detect_intent_and_action, extract_params_from_text
 from app.services.aws_credentials_service import get_user_aws_credentials, has_user_aws_credentials, validate_aws_credentials
 from app.services.aws_sync_service import sync_aws_instances_to_db
-from app.services.p04_p05_chat_intents import detect_ssm_check_intent
+from app.services.p04_p05_chat_intents import (
+    detect_ssm_check_intent,
+    detect_vpc_check_intent,
+    format_vpc_status_response,
+)
+from app.services.vpc_diagnostics import run_vpc_diagnostics
+from app.services.execution_logger import log_execution_event
 from app.services.detect_intent_catalog import detect_intent_with_catalog
-from app.services.config_catalog import get_action_by_id
+from app.services.config_catalog import get_action_by_id, get_categories, get_suggested_actions
 from app.services import execution_service
 from app.services.free_chat_service import handle_free_chat_message
 from app.schemas.schemas import ChatMessageRequest
@@ -169,7 +175,18 @@ async def execute_infrastructure_creation(
         
         if not execution_id:
             raise Exception("execution_id manquant dans la réponse")
-        
+
+        # Lier l'AsyncTask à l'Execution dès que l'execution_id est connu
+        running_task = (
+            db.query(models.AsyncTask)
+            .filter_by(session_id=session_id, user_id=user_id, status="running")
+            .order_by(models.AsyncTask.created_at.desc())
+            .first()
+        )
+        if running_task and not running_task.execution_id:
+            running_task.execution_id = execution_id
+            db.commit()
+
         if progress_callback:
             progress_callback("generation_complete", f" Fichier {engine} généré (ID: {file_id})", 20.0)
             progress_callback("execution_ready", f" Exécution créée (ID: {execution_id})", 30.0)
@@ -1070,7 +1087,7 @@ async def chat_message(
             payload = send_bot_message(
                 summary_text,
                 "awaiting_intent",
-                {"configure_result": result, "trace_id": trace_id}
+                {"configure_result": result, "trace_id": trace_id, "execution_id_db": execution.id}
             )
 
             if show_details and details_text:
@@ -1311,11 +1328,21 @@ async def chat_message(
     )
     
     if fast_command == "LIST_RESOURCES":
-        # Vérifier les credentials avant de lister
         if not has_user_aws_credentials(user.id, db):
             return redirect_credentials_message()
-        
-        # -> Exécuter directement sans GPT
+
+        execution = models.Execution(
+            user_id=user.id,
+            session_id=session.id,
+            task_type="list_resources",
+            status="running",
+            extra_data=json.dumps({"progress": 0, "progress_message": "Récupération des ressources…"}),
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+        log_execution_event(db, execution.id, user.id, "started", "Listage des ressources démarré")
+
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
@@ -1323,45 +1350,68 @@ async def chat_message(
                     params={"session_id": session.id},
                     headers={"Authorization": auth_header}
                 )
+
+            if resp.status_code != 200:
+                log_execution_event(db, execution.id, user.id, "failed",
+                                    f"Erreur backend: {resp.status_code}", level="ERROR")
+                execution.status = "failed"
+                db.commit()
+                return send_bot_message(f"Erreur backend : {resp.text}", session.state,
+                                        {"execution_id_db": execution.id})
+
+            data = resp.json()
+            database_resources = data.get("database_resources", [])
+            cloud_resources = data.get("cloud_resources", [])
+            summary = data.get("summary", {})
+
+            total = summary.get("total_unique", 0)
+            log_execution_event(db, execution.id, user.id, "phase",
+                                f"Synchronisation AWS: {total} ressources uniques trouvées")
+
+            if not database_resources and not cloud_resources:
+                log_execution_event(db, execution.id, user.id, "completed", "Aucune ressource trouvée")
+                execution.status = "completed"
+                db.commit()
+                return send_bot_message("Aucune ressource trouvée.", session.state,
+                                        {"execution_id_db": execution.id})
+
+            lines = ["Découverte complète des ressources AWS\n"]
+            lines.append(f"Résumé: {total} ressources uniques trouvées")
+            lines.append(f"   • Base de données: {summary.get('total_db', 0)} instances")
+            lines.append(f"   • Découvertes AWS: {summary.get('total_cloud', 0)} instances")
+            lines.append("   • Synchronisation AWS réussie\n" if summary.get('aws_discovery_success')
+                         else "   • Découverte AWS indisponible\n")
+
+            if cloud_resources:
+                lines.append("Instances AWS (temps réel):")
+                for r in cloud_resources:
+                    state_text = ("running" if r.get('state') == 'running'
+                                  else "stopped" if r.get('state') == 'stopped' else "unknown")
+                    ip_display = r.get('public_ip', 'Pas d\'IP publique')
+                    lines.append(f"   {r.get('instance_id', 'N/A')} | État: {state_text} | IP: {ip_display}")
+                lines.append("")
+
+            if database_resources:
+                lines.append("Instances trackées localement:")
+                for r in database_resources:
+                    lines.append(
+                        f"   {r['instance_id']} | IP: {r.get('public_ip', 'N/A')}"
+                        f" | User: {r['ssh_user']} | Provider: {r['provider']}"
+                    )
+                lines.append("")
+
+            log_execution_event(db, execution.id, user.id, "completed",
+                                f"Listage terminé: {total} ressources")
+            execution.status = "completed"
+            db.commit()
+            return send_bot_message("\n".join(lines), session.state, {"execution_id_db": execution.id})
+
         except Exception as e:
-            return send_bot_message(f"Erreur lors de la récupération : {str(e)}", session.state)
-        
-        if resp.status_code != 200:
-            return send_bot_message(f"Erreur backend : {resp.text}", session.state)
-        
-        data = resp.json()
-        database_resources = data.get("database_resources", [])
-        cloud_resources = data.get("cloud_resources", [])
-        summary = data.get("summary", {})
-        
-        if not database_resources and not cloud_resources:
-            return send_bot_message("Aucune ressource trouvée.", session.state)
-        
-        lines = ["Découverte complète des ressources AWS\n"]
-        lines.append(f"Résumé: {summary.get('total_unique', 0)} ressources uniques trouvées")
-        lines.append(f"   • Base de données: {summary.get('total_db', 0)} instances")
-        lines.append(f"   • Découvertes AWS: {summary.get('total_cloud', 0)} instances")
-        
-        if summary.get('aws_discovery_success'):
-            lines.append("   • Synchronisation AWS réussie\n")
-        else:
-            lines.append("   • Découverte AWS indisponible\n")
-        
-        if cloud_resources:
-            lines.append("Instances AWS (temps réel):")
-            for r in cloud_resources:
-                state_text = "running" if r.get('state') == 'running' else "stopped" if r.get('state') == 'stopped' else "unknown"
-                ip_display = r.get('public_ip', 'Pas d\'IP publique')
-                lines.append(f"   {r.get('instance_id', 'N/A')} | État: {state_text} | IP: {ip_display}")
-            lines.append("")
-        
-        if database_resources:
-            lines.append("Instances trackées localement:")
-            for r in database_resources:
-                lines.append(f"   {r['instance_id']} | IP: {r.get('public_ip', 'N/A')} | User: {r['ssh_user']} | Provider: {r['provider']}")
-            lines.append("")
-        
-        return send_bot_message("\n".join(lines), session.state)
+            log_execution_event(db, execution.id, user.id, "failed", f"Erreur: {str(e)}", level="ERROR")
+            execution.status = "failed"
+            db.commit()
+            return send_bot_message(f"Erreur lors de la récupération : {str(e)}", session.state,
+                                    {"execution_id_db": execution.id})
     
     elif fast_command == "CANCEL":
         # Reset complet du flow (important)
@@ -2250,6 +2300,161 @@ async def chat_message(
         return send_bot_message("Diagnostic SSM en cours avant configuration.", "executing", {"execution_id_db": execution.id})
 
     # =============================================================
+    #  deletion_mode — sélection des ressources à supprimer
+    # =============================================================
+
+    if session.state == "deletion_mode":
+        cmd_del = command.strip().lower()
+
+        # "lister" → montrer les instances disponibles
+        if cmd_del in {"lister", "list", "liste"}:
+            from app.services.configure_only import get_available_instances_for_user
+            available = get_available_instances_for_user(db, user.id)
+            if not available:
+                return send_bot_message("Aucune instance trouvée.", "deletion_mode")
+            lines = ["Instances disponibles:\n"]
+            for i, inst in enumerate(available, 1):
+                name = inst.get("name") or inst.get("instance_id", "?")
+                ip = inst.get("public_ip", "N/A")
+                st = inst.get("status", "?")
+                lines.append(f"  {i}. {name} | {ip} | {st}")
+            lines.append("\nTape les numeros ou IDs a supprimer (ex: 1 2 ou i-xxxx).")
+            return send_bot_message("\n".join(lines), "deletion_mode")
+
+        # "annuler" → retour menu
+        if cmd_del in {"annuler", "cancel", "non", "no"}:
+            session.state = "awaiting_intent"
+            session.session_temp_data = None
+            db.commit()
+            return send_bot_message("Suppression annulée. Retour au menu.", "awaiting_intent")
+
+        # Sinon: parser les IDs et demander confirmation
+        from app.services.configure_only import get_available_instances_for_user
+        available = get_available_instances_for_user(db, user.id)
+        nums = [int(n) for n in re.findall(r"\d+", command) if n.isdigit() and 1 <= int(n) <= len(available)]
+        aws_ids = re.findall(r"i-[0-9a-f]{8,17}", command.lower())
+
+        selected_instances = []
+        for n in nums:
+            selected_instances.append(available[n - 1])
+        for aid in aws_ids:
+            match = next((a for a in available if a["instance_id"] == aid), None)
+            if match and match not in selected_instances:
+                selected_instances.append(match)
+
+        if not selected_instances:
+            return send_bot_message(
+                "Aucune instance reconnue. Tape ‘lister’ pour voir les instances disponibles.",
+                "deletion_mode"
+            )
+
+        names = ", ".join(i["name"] or i["instance_id"] for i in selected_instances)
+        session.state = "awaiting_delete_confirmation"
+        session.session_temp_data = json.dumps({
+            "instance_ids": [i["instance_id"] for i in selected_instances],
+        })
+        db.commit()
+        return send_bot_message(
+            f" **Confirmation suppression**\n\nInstances à supprimer: **{names}**\n\n"
+            "Cette action est **irréversible**. Tape **`ok`** pour confirmer ou `annuler`.",
+            "awaiting_delete_confirmation"
+        )
+
+    if session.state == "awaiting_delete_confirmation":
+        cmd_del = command.strip().lower()
+        confirm_kw = {"ok", "oui", "yes", "confirmer", "go", "lancer"}
+        deny_kw = {"non", "no", "annuler", "cancel", "stop"}
+
+        if cmd_del in deny_kw:
+            session.state = "awaiting_intent"
+            session.session_temp_data = None
+            db.commit()
+            return send_bot_message("Suppression annulée. Retour au menu.", "awaiting_intent")
+
+        if cmd_del not in confirm_kw:
+            return send_bot_message(
+                "Réponds par **`ok`** pour confirmer la suppression ou `annuler`.",
+                "awaiting_delete_confirmation"
+            )
+
+        data_del = {}
+        try:
+            data_del = json.loads(session.session_temp_data or "{}")
+        except Exception:
+            pass
+        instance_ids = data_del.get("instance_ids", [])
+        if not instance_ids:
+            session.state = "awaiting_intent"
+            db.commit()
+            return send_bot_message("Aucune instance à supprimer. Retour au menu.", "awaiting_intent")
+
+        execution = models.Execution(
+            user_id=user.id,
+            session_id=session.id,
+            task_type="delete",
+            status="running",
+            extra_data=json.dumps({
+                "instance_ids": instance_ids,
+                "progress": 0,
+                "progress_message": "Suppression en cours…",
+            }),
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+        ids_str = ", ".join(instance_ids)
+        log_execution_event(db, execution.id, user.id, "started",
+                            f"Suppression demarree pour: {ids_str}")
+
+        deleted = []
+        failed = []
+        for inst_id in instance_ids:
+            log_execution_event(db, execution.id, user.id, "phase", f"Suppression de {inst_id}…")
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.delete(
+                        f"{settings.BACKEND_BASE_URL}/resources/delete_instance",
+                        params={"session_id": session.id, "instance_id": inst_id},
+                        headers={"Authorization": auth_header},
+                    )
+                if resp.status_code == 200:
+                    deleted.append(inst_id)
+                    log_execution_event(db, execution.id, user.id, "phase",
+                                        f"{inst_id}: supprimé avec succès")
+                else:
+                    failed.append(inst_id)
+                    log_execution_event(db, execution.id, user.id, "phase",
+                                        f"{inst_id}: erreur {resp.status_code}", level="WARNING")
+            except Exception as e:
+                failed.append(inst_id)
+                log_execution_event(db, execution.id, user.id, "phase",
+                                    f"{inst_id}: exception {str(e)[:100]}", level="ERROR")
+
+        session.state = "awaiting_intent"
+        session.session_temp_data = None
+        if failed:
+            execution.status = "failed"
+            log_execution_event(db, execution.id, user.id, "failed",
+                                f"Suppression partielle: {len(deleted)} OK, {len(failed)} échecs",
+                                level="ERROR")
+        else:
+            execution.status = "completed"
+            log_execution_event(db, execution.id, user.id, "completed",
+                                f"Suppression terminée: {len(deleted)} instance(s) supprimée(s)")
+        db.commit()
+
+        summary_lines = []
+        if deleted:
+            summary_lines.append(" Supprimees: " + ", ".join(deleted))
+        if failed:
+            summary_lines.append(" Echecs: " + ", ".join(failed))
+        return send_bot_message(
+            "\n".join(summary_lines) or "Aucune instance supprimée.",
+            "awaiting_intent",
+            {"execution_id_db": execution.id}
+        )
+
+    # =============================================================
     #  Bloc 2 — Détection d’intention (awaiting_intent)
     # Rôle : analyse GPT + fallback (create, configure, audit, kubernetes)
     # =============================================================
@@ -2550,7 +2755,6 @@ async def chat_message(
         logger.info(f"Testing SSM check for: {text[:50]}")
         if detect_ssm_check_intent(text):
             logger.info(" SSM check intent detected!")
-            # Get AWS credentials
             creds = get_user_aws_credentials(user.id, db)
             if not creds:
                 return send_bot_message(
@@ -2558,30 +2762,39 @@ async def chat_message(
                     "Configure tes credentials AWS d'abord ou contacte l'admin.",
                     "awaiting_intent"
                 )
-            
+
+            execution = models.Execution(
+                user_id=user.id, session_id=session.id,
+                task_type="ssm_status", status="running",
+                extra_data=json.dumps({"progress": 0, "progress_message": "Diagnostic SSM en cours…"}),
+            )
+            db.add(execution)
+            db.commit()
+            db.refresh(execution)
+            log_execution_event(db, execution.id, user.id, "started", "Diagnostic SSM démarré")
+
             try:
-                # Run SSM diagnostics
                 diag, diag_err = _run_ssm_diag(user.id, db)
-                
-                if diag_err:
-                    return send_bot_message(
-                        f" Erreur lors du diagnostic SSM: {diag_err}",
-                        "awaiting_intent"
-                    )
-                
-                if not diag:
-                    return send_bot_message(
-                        " Impossible de récupérer le diagnostic SSM.",
-                        "awaiting_intent"
-                    )
-                
-                # Format response
+
+                if diag_err or not diag:
+                    msg = diag_err or "Impossible de récupérer le diagnostic SSM."
+                    log_execution_event(db, execution.id, user.id, "failed", msg, level="ERROR")
+                    execution.status = "failed"
+                    db.commit()
+                    return send_bot_message(f" Erreur diagnostic SSM: {msg}", "awaiting_intent",
+                                            {"execution_id_db": execution.id})
+
                 total_online = diag.get("total_ssm_online_aws", 0)
                 total_instances = diag.get("total_instances_aws", 0)
-                summary = diag.get("summary", "Diagnostic SSM effectué")
-                
+                summary_ssm = diag.get("summary", "Diagnostic SSM effectué")
+                log_execution_event(db, execution.id, user.id, "phase",
+                                    f"Instances trouvées: {total_instances}, SSM online: {total_online}")
+
                 if total_online == 0:
                     blocked_summary = _format_block_summary(diag)
+                    log_execution_event(db, execution.id, user.id, "completed",
+                                        f"Diagnostic SSM: 0/{total_instances} online — blocages détectés")
+                    execution.status = "completed"
                     session.state = "awaiting_ssm_fix_confirm"
                     session.session_temp_data = json.dumps({
                         "resume_intent": "ssm_check",
@@ -2589,30 +2802,81 @@ async def chat_message(
                         "blocked_instances": diag.get("blocked_instances", []),
                     })
                     db.commit()
-                    
                     return send_bot_message(
-                        f" Diagnostic SSM:\n{summary}\n"
+                        f" Diagnostic SSM:\n{summary_ssm}\n"
                         f"Blocages: {blocked_summary}\n\n"
                         "Souhaites-tu que je configure automatiquement SSM sur ces VM ? (réponds 'oui')",
                         "awaiting_ssm_fix_confirm",
-                        {"diagnostic": diag}
+                        {"diagnostic": diag, "execution_id_db": execution.id}
                     )
                 else:
+                    log_execution_event(db, execution.id, user.id, "completed",
+                                        f"Diagnostic SSM: {total_online}/{total_instances} online")
+                    execution.status = "completed"
+                    db.commit()
                     response_text = (
                         f" Diagnostic SSM:\n"
                         f"• Instances AWS trouvées: {total_instances}\n"
                         f"• Instances SSM online: {total_online}\n"
-                        f"• {summary}"
+                        f"• {summary_ssm}"
                     )
-                    return send_bot_message(response_text, "awaiting_intent", {"diagnostic": diag})
-            
+                    return send_bot_message(response_text, "awaiting_intent",
+                                            {"diagnostic": diag, "execution_id_db": execution.id})
+
             except Exception as e:
                 logger.error(f"SSM diagnostic failed: {e}")
-                return send_bot_message(
-                    f" Erreur lors du diagnostic SSM: {str(e)[:100]}",
-                    "awaiting_intent"
+                log_execution_event(db, execution.id, user.id, "failed", str(e)[:200], level="ERROR")
+                execution.status = "failed"
+                db.commit()
+                return send_bot_message(f" Erreur lors du diagnostic SSM: {str(e)[:100]}",
+                                        "awaiting_intent", {"execution_id_db": execution.id})
+
+        # ============================================================================
+        #  P0.5.2 — VPC Status Check Intent
+        # ============================================================================
+        if detect_vpc_check_intent(text):
+            logger.info(" VPC check intent detected!")
+            creds = get_user_aws_credentials(user.id, db)
+            if not creds:
+                return redirect_credentials_message()
+
+            execution = models.Execution(
+                user_id=user.id, session_id=session.id,
+                task_type="vpc_status", status="running",
+                extra_data=json.dumps({"progress": 0, "progress_message": "Diagnostic VPC en cours…"}),
+            )
+            db.add(execution)
+            db.commit()
+            db.refresh(execution)
+            log_execution_event(db, execution.id, user.id, "started", "Diagnostic VPC démarré")
+
+            try:
+                normalized = _normalize_aws_creds(creds)
+                region = normalized.get("region") or "eu-west-1"
+                log_execution_event(db, execution.id, user.id, "phase",
+                                    f"Analyse VPC / subnets (région: {region})…")
+                diag_vpc = run_vpc_diagnostics(
+                    aws_access_key_id=normalized["access_key_id"],
+                    aws_secret_access_key=normalized["secret_access_key"],
+                    region=region,
                 )
-        
+                vpc_count = len(diag_vpc.get("vpcs", []))
+                log_execution_event(db, execution.id, user.id, "completed",
+                                    f"Diagnostic VPC terminé: {vpc_count} VPC(s) analysé(s)")
+                execution.status = "completed"
+                db.commit()
+                response_text = format_vpc_status_response(diag_vpc)
+                return send_bot_message(response_text, "awaiting_intent",
+                                        {"execution_id_db": execution.id, "diagnostic": diag_vpc})
+
+            except Exception as e:
+                logger.error(f"VPC diagnostic failed: {e}")
+                log_execution_event(db, execution.id, user.id, "failed", str(e)[:200], level="ERROR")
+                execution.status = "failed"
+                db.commit()
+                return send_bot_message(f" Erreur diagnostic VPC: {str(e)[:100]}",
+                                        "awaiting_intent", {"execution_id_db": execution.id})
+
         # ============================================================================
         #  Intent Detection: Utilise le catalogue deterministe (config_catalog)
         # ============================================================================

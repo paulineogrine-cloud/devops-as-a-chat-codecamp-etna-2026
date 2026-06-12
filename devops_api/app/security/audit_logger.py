@@ -70,7 +70,7 @@ def audit_log(
     audit_db = SessionLocal()
     
     try:
-        logger.info(f" audit_log START: {action} ({status})")
+        logger.debug("audit_log start action=%s status=%s", action, status)
         
         # Récupérer IP address
         ip_address = "unknown"
@@ -123,7 +123,7 @@ def audit_log(
             }
         )
         audit_db.commit()
-        logger.info(f" audit_log COMMITTED: {action}")
+        logger.debug("audit_log committed action=%s", action)
         
         logger.debug(f"OK Audit log: {action} ({resource_type}) by user {user_id} - {status}")
         
@@ -138,6 +138,6 @@ def audit_log(
         # OK Toujours fermer la session indépendante
         try:
             audit_db.close()
-            logger.info(f" audit_log CLOSED: {action}")
+            logger.debug("audit_log closed action=%s", action)
         except:
             pass

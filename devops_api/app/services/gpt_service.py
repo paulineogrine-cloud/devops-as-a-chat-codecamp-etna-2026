@@ -2,6 +2,7 @@
 # Licensed under the MIT License
 
 # app/services/gpt_service.py
+import asyncio
 import logging
 import os
 import json
@@ -175,7 +176,7 @@ async def generate_instructions_from_gpt(prompt: str) -> str:
         {"role": "user", "content": prompt},
     ]
 
-    content = _chat_with_retry(messages, model=_DEFAULT_MODEL, temperature=0.2)
+    content = await asyncio.to_thread(_chat_with_retry, messages, model=_DEFAULT_MODEL, temperature=0.2)
     return _strip_code_fences(content)
 
 
@@ -207,7 +208,8 @@ async def analyze_intent(request_text: str) -> dict:
     ]
 
     try:
-        content = _chat_with_retry(
+        content = await asyncio.to_thread(
+            _chat_with_retry,
             messages,
             model=_DEFAULT_MODEL,
             temperature=0.0,
@@ -290,5 +292,5 @@ async def generate_free_chat_completion(prompt: str) -> str:
         {"role": "user", "content": prompt},
     ]
 
-    content = _chat_with_retry(messages, model=_DEFAULT_MODEL, temperature=0.5)
+    content = await asyncio.to_thread(_chat_with_retry, messages, model=_DEFAULT_MODEL, temperature=0.5)
     return content.strip()

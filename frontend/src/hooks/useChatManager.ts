@@ -617,7 +617,7 @@ export function useChatManager() {
             chat_id: Number(chatId),
             sender: "user",
             text: msg,
-          });
+          }, { timeout: 60000 });
           freeChattRes = res.data; // Capture for later return
 
           // 4. Merger immédiatement avec fonction utilitaire
@@ -701,6 +701,7 @@ export function useChatManager() {
           const res = await axiosClient.post(
             "/chat_creation/chat_message",
             payload,
+            { timeout: 60000 },
           );
 
           //  NORMALISATION ROBUSTE: tolérer les 2 formats de réponse backend

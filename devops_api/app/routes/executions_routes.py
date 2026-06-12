@@ -637,3 +637,68 @@ def get_execution(
         "progress": progress,
         "progress_message": progress_message
     }
+
+
+@router.get(
+    "/executions/{execution_id}/logs",
+    tags=["Executions"],
+    summary="Logs d'une exécution (polling temps réel)",
+)
+def get_execution_logs(
+    execution_id: int,
+    since: Optional[str] = Query(
+        None,
+        description="Retourner uniquement les logs créés après cette date ISO8601. "
+                    "Omis = tous les logs.",
+    ),
+    limit: int = Query(100, ge=1, le=500, description="Nombre max de logs retournés."),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Retourne les logs d'une exécution triés par date croissante.
+
+    Utilisé pour le suivi temps réel : le frontend appelle cet endpoint
+    périodiquement en passant le ``created_at`` du dernier log reçu comme
+    valeur de ``since``.
+    """
+    execution = db.query(models.Execution).filter_by(id=execution_id, user_id=user.id).first()
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution introuvable.")
+
+    query = (
+        db.query(ExecutionLog)
+        .filter(ExecutionLog.execution_id == execution_id)
+    )
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            query = query.filter(ExecutionLog.created_at > since_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Paramètre 'since' invalide : '{since}'. Format attendu : ISO8601.",
+            )
+
+    logs = (
+        query
+        .order_by(ExecutionLog.created_at.asc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "execution_id": execution_id,
+        "count": len(logs),
+        "logs": [
+            {
+                "id": log.id,
+                "event": log.event,
+                "level": log.level or "INFO",
+                "message": log.message,
+                "correlation_id": log.correlation_id,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log in logs
+        ],
+    }

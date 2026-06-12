@@ -15,8 +15,18 @@ from app.services.parse_instance_result import parse_instance_result
 from app.utils.crypto import decrypt
 from app.utils.file_utils import create_and_store_terraform_file  # pour compat si on génère ici
 from app.utils.extra_data_utils import get_extra, set_extra
+import asyncio
+import functools
 from app.security.safe_subprocess import run_safe_command, CommandResult
 from app.services.aws_credentials_service import validate_aws_credentials
+
+
+async def _run_safe_async(cmd, **kwargs) -> CommandResult:
+    """Exécute run_safe_command dans un thread pour ne pas bloquer l'event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, functools.partial(run_safe_command, cmd, **kwargs)
+    )
 
 #  Import du module (on gère le fallback si certaines fonctions sont absentes)
 import app.services.terraform_validator as tf_validator
@@ -126,9 +136,16 @@ async def run_terraform(
     os.makedirs(exec_dir, exist_ok=True)
     report_progress("terraform_workspace", f" Workspace: {exec_dir}", 15.0)
 
-    # Copie en main.tf
+    # Copie en main.tf (avec correction des noms fixes de security groups → name_prefix)
     with open(tf_file, "r", encoding="utf-8") as f:
         tf_content = f.read()
+    import re as _re
+    tf_content = _re.sub(
+        r'(\bresource\s+"aws_security_group"\s+"[^"]+"\s*\{[^}]*?)(\s+name\s*=\s*"([^"]+)")',
+        lambda m: m.group(1) + f'\n  name_prefix = "{m.group(3)[:24]}-"',
+        tf_content,
+        flags=_re.DOTALL,
+    )
     target_tf = os.path.join(exec_dir, "main.tf")
     with open(target_tf, "w", encoding="utf-8", newline="\n") as f:
         f.write((tf_content or "").rstrip() + "\n")
@@ -203,9 +220,9 @@ async def run_terraform(
     except Exception:
         logger.warning("Impossible de persister provider/region dans execution.extra_data")
 
-    def run_cmd(cmd: list[str], label: str) -> CommandResult:
+    async def run_cmd(cmd: list[str], label: str) -> CommandResult:
         logger.info(f" [Terraform]  {label} : {' '.join(cmd)}")
-        result = run_safe_command(cmd, cwd=exec_dir, env=env, timeout_seconds=900)
+        result = await _run_safe_async(cmd, cwd=exec_dir, env=env, timeout_seconds=900)
         out = result.stdout.strip()
         err = result.stderr.strip()
         logs[label] = (out + ("\n" + err if err else "")).strip()
@@ -237,13 +254,13 @@ async def run_terraform(
         report_progress("terraform_validation_complete", " Syntaxe Terraform validée", 25.0)
     else:
         report_progress("terraform_validation_fallback", " Validation par CLI Terraform", 22.0)
-        init_result = run_safe_command(
+        init_result = await _run_safe_async(
             ["terraform", "init", "-backend=false", "-no-color"],
             cwd=exec_dir, env=env, timeout_seconds=900
         )
         if init_result.returncode != 0:
             raise Exception(f"Terraform init (validate) failed:\n{(init_result.stderr or init_result.stdout)}")
-        val_result = run_safe_command(
+        val_result = await _run_safe_async(
             ["terraform", "validate", "-no-color"],
             cwd=exec_dir, env=env, timeout_seconds=900
         )
@@ -253,23 +270,23 @@ async def run_terraform(
     try:
         # Version
         report_progress("terraform_version", " Vérification de la version Terraform", 30.0)
-        run_cmd(["terraform", "version"], "version")
+        await run_cmd(["terraform", "version"], "version")
 
         # Init
         report_progress("terraform_init_start", " Initialisation du workspace Terraform", 40.0)
-        run_cmd(["terraform", "init", "-reconfigure", "-no-color"], "init")
+        await run_cmd(["terraform", "init", "-reconfigure", "-no-color"], "init")
         report_progress("terraform_init_complete", " Terraform initialisé", 50.0)
 
         # Plan
         report_progress("terraform_plan_start", " Génération du plan d'exécution", 60.0)
-        run_cmd(["terraform", "plan", "-no-color", "-input=false"], "plan")
+        await run_cmd(["terraform", "plan", "-no-color", "-input=false"], "plan")
         report_progress("terraform_plan_complete", " Plan généré", 70.0)
 
         # Apply (flux temps réel)
         report_progress("terraform_apply_start", " Déploiement de l'infrastructure", 75.0)
         logger.info(" [Terraform]  apply : terraform apply -no-color -input=false -auto-approve")
 
-        apply_result = run_safe_command(
+        apply_result = await _run_safe_async(
             ["terraform", "apply", "-no-color", "-input=false", "-auto-approve"],
             cwd=exec_dir, env=env, timeout_seconds=1800
         )
@@ -323,7 +340,8 @@ async def run_terraform(
         logs["apply"] = apply_output
 
         if apply_result.returncode != 0:
-            raise Exception(f"Erreur 'apply': {apply_output}")
+            stderr_tail = (apply_result.stderr or "").strip()[-800:]
+            raise Exception(f"Erreur 'apply': {apply_output}\nSTDERR: {stderr_tail}")
 
         report_progress("terraform_apply_complete",
                         f" Infrastructure déployée ({resources_created} ressources)", 90.0)
@@ -353,7 +371,7 @@ async def run_terraform(
 
     # Outputs (JSON)
     report_progress("terraform_outputs", " Extraction des outputs", 95.0)
-    out_proc = run_cmd(["terraform", "output", "-json"], "output")
+    out_proc = await run_cmd(["terraform", "output", "-json"], "output")
 
     try:
         outputs = json.loads(out_proc.stdout or "{}")

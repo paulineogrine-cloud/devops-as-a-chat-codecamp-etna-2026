@@ -89,7 +89,7 @@ def extract_create_infra_params(text: str) -> Dict[str, Any]:
     Returns:
         {
             "instance_count": int (default 1),
-            "instance_type": str (default "t3.micro"),
+            "instance_type": str (default "t2.micro"),
             "ubuntu_version": str (default "22.04"),
             "region": str (default "eu-north-1")
         }
@@ -97,7 +97,7 @@ def extract_create_infra_params(text: str) -> Dict[str, Any]:
     text_lower = text.lower()
     params = {
         "instance_count": 1,
-        "instance_type": "t3.micro",
+        "instance_type": "t2.micro",
         "ubuntu_version": "22.04",
         "region": "eu-north-1"
     }
@@ -118,13 +118,13 @@ def extract_create_infra_params(text: str) -> Dict[str, Any]:
     # Default to 22.04
     
     # Extract instance type
-    if "t3.small" in text or "small" in text_lower:
-        params["instance_type"] = "t3.small"
-    elif "t3.medium" in text or "medium" in text_lower:
-        params["instance_type"] = "t3.medium"
-    elif "t3.large" in text or "large" in text_lower:
-        params["instance_type"] = "t3.large"
-    # Default to t3.micro
+    if "t3.small" in text or "t2.small" in text or "small" in text_lower:
+        params["instance_type"] = "t2.small"
+    elif "t3.medium" in text or "t2.medium" in text or "medium" in text_lower:
+        params["instance_type"] = "t2.medium"
+    elif "t3.large" in text or "t2.large" in text or "large" in text_lower:
+        params["instance_type"] = "t2.large"
+    # Default to t2.micro (free tier eligible)
     
     # Extract region
     if "eu-west" in text_lower or "ireland" in text_lower:

@@ -333,10 +333,11 @@ class ChatDisplayService:
         percent = (current / total * 100) if total > 0 else 0
         bar_filled = int(percent / 5)  # 20 segments
         bar_empty = 20 - bar_filled
-        bar = "" * bar_filled + "" * bar_empty
-        
+        bar = "█" * bar_filled + "░" * bar_empty
+
         lines = [
-            f" **Progression: {percent:.0f}%** [{bar}]",
+            f"⏳ **Progression : {percent:.0f}%**",
+            f"`[{bar}]`",
             f"   {current}/{total} étapes complétées"
         ]
         

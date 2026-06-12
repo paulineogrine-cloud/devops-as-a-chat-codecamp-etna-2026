@@ -71,7 +71,10 @@ Message utilisateur
 |---------|-----------|
 | `devops_api/app/schemas/intent_schema.py` | Ajout de `SUPPORTED_INTENTS`, `missing_params`, `suggestions`, `is_unknown()` dans `DetectedIntent` |
 | `devops_api/app/services/chat_service.py` | `detect_intent_and_action()` délègue au nouveau moteur via `detect_intent()` |
-| `devops_api/app/routes/chat_creation_routes.py` | Correction de deux bugs de routage (voir section Bugs corrigés) |
+| `devops_api/app/routes/chat_creation_routes.py` | Correction de trois bugs de routage + import `generate_free_chat_response` (voir section Bugs corrigés) |
+| `devops_api/app/services/gpt_service.py` | Ajout support Mistral (provider configurable, client OpenAI-compatible) |
+| `docker-compose.yml` | Ajout `MISTRAL_API_KEY` dans la section `environment` du backend |
+| `.env.example` | Ajout `MISTRAL_API_KEY`, documentation des providers et modèles disponibles |
 
 ---
 
@@ -214,7 +217,7 @@ elif detected_intent.intent_type == "free_chat":
     # Passer au free_chat handler
     pass  # ← jamais délégué, retombait dans le fallback
 
-# Après
+# Après (v1 — incorrect, voir Bug 3)
 elif detected_intent.intent_type == "free_chat":
     return await handle_free_chat_message(
         db=db, user=user, session_id=session_id, chat_id=chat_id, text=text,
@@ -223,11 +226,86 @@ elif detected_intent.intent_type == "free_chat":
 
 **Symptôme observé** : taper `help` retournait "Je n'ai pas compris l'intention. Essaie: 'créer', 'configurer', 'auditer' ou 'monitorer'." au lieu du message d'aide DAC.
 
+### Bug 3 — Format de réponse incompatible en mode DAC (free_chat)
+
+`handle_free_chat_message` retourne un payload au format mode libre :
+
+```json
+{ "status": "ok", "mode": "free", "messages": [...] }
+```
+
+Mais le frontend DAC attend le format `send_bot_message` :
+
+```json
+{ "message": "...", "state": "awaiting_intent", "session_state": "...", "session_mode": "dac" }
+```
+
+Conséquence : Mistral répondait correctement mais le frontend ignorait la réponse.
+
+```python
+# Après (v2 — correct)
+elif detected_intent.intent_type == "free_chat":
+    bot_text = await generate_free_chat_response(user_message=text)
+    return send_bot_message(bot_text, "awaiting_intent")
+```
+
+`handle_free_chat_message` reste utilisé uniquement pour `session.mode == "free"` (mode free chat dédié) où le frontend attend son format spécifique.
+
+---
+
+## Intégration Mistral (provider IA configurable)
+
+Le provider IA est désormais configurable via variables d'environnement, sans changer de package Python (`openai` SDK supporte un `base_url` personnalisé).
+
+### Providers supportés
+
+| `DAC_AI_PROVIDER` | Client | Modèle par défaut |
+|-------------------|--------|-------------------|
+| `mistral` | OpenAI SDK → `api.mistral.ai/v1` | `mistral-small-latest` |
+| `openai` | OpenAI SDK → `api.openai.com` | `gpt-4o-mini` |
+| `mock` | aucun | — (réponse statique) |
+
+### Auto-détection
+
+Si `DAC_AI_PROVIDER` n'est pas défini, le backend choisit automatiquement selon les clés disponibles :
+```
+MISTRAL_API_KEY présente → mistral
+OPENAI_API_KEY présente  → openai
+aucune clé               → mock
+```
+
+### Configuration requise dans `.env`
+
+```env
+DAC_AI_PROVIDER=mistral
+MISTRAL_API_KEY=ta_cle_ici
+DAC_AI_MODEL=mistral-small-latest   # ou open-mistral-7b (open weights, gratuit)
+```
+
+### Bug corrigé — `MISTRAL_API_KEY` absent du docker-compose
+
+`docker-compose.yml` ne déclarait pas `MISTRAL_API_KEY` dans la section `environment` du service backend. Docker Compose n'injectait donc jamais la variable dans le container, quelle que soit la valeur dans `.env`.
+
+```yaml
+# Avant
+OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+DAC_AI_PROVIDER: ${DAC_AI_PROVIDER:-mock}
+
+# Après
+OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+DAC_AI_PROVIDER: ${DAC_AI_PROVIDER:-mock}
+DAC_AI_MODEL: ${DAC_AI_MODEL:-mistral-small-latest}
+```
+
+**Symptôme observé** : message "Mode IA mock actif: aucune cle API n'est configuree." même avec `MISTRAL_API_KEY` définie dans `.env`.
+
 ---
 
 ## Décisions techniques
 
-- **Pas d'IA dans la couche de détection** : l'appel GPT existant (`generate_instructions_from_gpt`) reste pour la *génération* de code Terraform/Ansible, pas pour la détection.
+- **Pas d'IA dans la couche de détection** : Mistral/OpenAI est utilisé uniquement pour les réponses libres (`free_chat`) et la génération de code Terraform/Ansible — jamais pour la détection d'intention (100% règles/regex).
 - **Couche catalogue conservée** : `config_catalog.py` est réutilisée en couche 2 pour résoudre `install_nginx` depuis `configure`, sans duplication.
 - **Priorité par spécificité** : en cas d'égalité de score, l'ordre `explain_error > generate_config > create > configure > audit > monitoring > check_status > help` garantit que l'intention la plus précise l'emporte.
 - **Normalisation unicode** : les accents sont supprimés avant matching pour couvrir les fautes de frappe sans accent.
+- **Provider Mistral sans dépendance supplémentaire** : le SDK `openai` supporte un `base_url` personnalisé — aucun package `mistralai` requis.

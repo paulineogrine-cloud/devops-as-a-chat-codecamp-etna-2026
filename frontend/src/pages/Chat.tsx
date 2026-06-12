@@ -26,6 +26,7 @@ import CredentialsForm from "../components/Chat/CredentialsForm";
 import InstanceSelector from "../components/Chat/InstanceSelector";
 import AWSResourcePanel from "../components/AWS/AWSResourcePanel";
 import AuditProgressWidget from "../components/AuditProgressWidget";
+import ExecutionLogList from "../components/Chat/ExecutionLogList";
 import { useExecution } from "../contexts/ExecutionContext";
 import { useExecutionPolling } from "../hooks/useExecutionPolling";
 import type { ChatState } from "../states/chatStates";
@@ -124,6 +125,11 @@ export default function ChatPage() {
     rawSelectedChatId != null ? Number(rawSelectedChatId) : null;
   const normalizedSessionId =
     rawSessionId != null ? Number(rawSessionId) : null;
+
+  // Synchronise currentExecutionId avec executionId capturé par useChatManager
+  useEffect(() => {
+    setCurrentExecutionId(executionId ? Number(executionId) : null);
+  }, [executionId]);
 
   //  Gestion d'exécution (empêcher l'empilement)
   const { runningExecution, startExecution, endExecution } = useExecution();
@@ -635,6 +641,12 @@ export default function ChatPage() {
                 message={polling.message}
                 executionId={currentExecutionId}
               />
+              {currentExecutionId && polling.executionLogs.length > 0 && (
+                <ExecutionLogList
+                  logs={polling.executionLogs}
+                  done={polling.logsDone}
+                />
+              )}
             </Box>
 
             {/* Zone de messages scrollable - CRITIQUE: minHeight: 0 */}

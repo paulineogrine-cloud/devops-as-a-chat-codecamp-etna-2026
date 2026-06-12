@@ -34,6 +34,7 @@ from app.services.free_chat_service import handle_free_chat_message
 from app.schemas.schemas import ChatMessageRequest
 from app.schemas.understanding_schema import UnderstandingDisplay
 from app.settings import settings
+from app.services.execution_logger import log_execution_event
 
 
 def parse_json_response(text: str) -> dict:
@@ -1114,6 +1115,20 @@ async def chat_message(
         if not rows:
             return send_bot_message("Aucune instance trouvée pour cette sélection.", "awaiting_resource_action_selection")
 
+        execution = models.Execution(
+            user_id=user.id,
+            session_id=session.id,
+            task_type="delete_instances",
+            status="running",
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+        log_execution_event(
+            db, execution.id, user.id, "started",
+            f"Action {payload.action} sur {len(rows)} instance(s)"
+        )
+
         done = []
         errors = []
         for inst in rows:
@@ -1131,11 +1146,22 @@ async def chat_message(
                     inst.status = "stopping"
                     done.append(inst.instance_id)
                 db.commit()
+                log_execution_event(db, execution.id, user.id, "phase", f"Instance traitée: {inst.instance_id}")
             except Exception as exc:
                 db.rollback()
                 errors.append(f"{inst.instance_id}: {str(exc)[:160]}")
+                log_execution_event(db, execution.id, user.id, "phase", f"Erreur: {inst.instance_id}: {str(exc)[:160]}", level="WARNING")
 
         session.session_temp_data = None
+        if errors and not done:
+            execution.status = "failed"
+        else:
+            execution.status = "completed"
+        log_execution_event(
+            db, execution.id, user.id,
+            "completed" if execution.status == "completed" else "failed",
+            f"Résultat: {len(done)} succès, {len(errors)} erreur(s)"
+        )
         db.commit()
 
         verb = "Suppression" if payload.action == "delete_instances" else "Démarrage" if payload.action == "start_instances" else "Arrêt"
@@ -1157,6 +1183,7 @@ async def chat_message(
                 "errors": errors,
                 "available_instances": available_instances,
                 "resource_actions": ["start", "stop", "delete"],
+                "execution_id_db": execution.id,
             },
         )
 
@@ -1316,7 +1343,7 @@ async def chat_message(
     # =============================================================
 
     PRIMARY_INTENTS = {"create", "configure", "audit", "monitoring"}
-    PRIMARY_FAST = {"LIST_RESOURCES", "ENTER_DELETION", "DEBUG", "CANCEL", "SHOW_MENU"}
+    PRIMARY_FAST = {"LIST_RESOURCES", "ENTER_DELETION", "DEBUG", "CANCEL", "SHOW_MENU", "VPC_STATUS"}
 
     def try_fast_commands(command: str) -> str | None:
         """
@@ -1345,13 +1372,17 @@ async def chat_message(
         
         if cmd in {"debug", "debug mode", "debug on"}:
             return "DEBUG"
-        
+
         if cmd in {"annuler", "cancel", "quit", "exit"}:
             return "CANCEL"
-        
+
         if cmd in {"menu", "help", "aide", "?"}:
             return "SHOW_MENU"
-        
+
+        vpc_commands = {"vpc status", "vpc", "vpc check", "statut vpc", "vpc diagnostics", "diagnostic vpc", "vérifier vpc", "verifier vpc"}
+        if cmd in vpc_commands or ("vpc" in cmd and any(k in cmd for k in ("status", "statut", "check", "diagnostic"))):
+            return "VPC_STATUS"
+
         return None
 
     def _is_executing_state(state: str | None) -> bool:
@@ -1541,8 +1572,18 @@ async def chat_message(
         # Vérifier les credentials avant de lister
         if not has_user_aws_credentials(user.id, db):
             return redirect_credentials_message()
-        
-        # -> Exécuter directement sans GPT
+
+        execution = models.Execution(
+            user_id=user.id,
+            session_id=session.id,
+            task_type="list_resources",
+            status="running",
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+        log_execution_event(db, execution.id, user.id, "started", "Listing des ressources AWS")
+
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
@@ -1551,29 +1592,43 @@ async def chat_message(
                     headers={"Authorization": auth_header}
                 )
         except Exception as e:
-            return send_bot_message(f"Erreur lors de la récupération : {str(e)}", session.state)
-        
+            execution.status = "failed"
+            log_execution_event(db, execution.id, user.id, "failed", str(e)[:300], level="ERROR")
+            db.commit()
+            return send_bot_message(f"Erreur lors de la récupération : {str(e)}", session.state, {"execution_id_db": execution.id})
+
         if resp.status_code != 200:
-            return send_bot_message(f"Erreur backend : {resp.text}", session.state)
-        
+            execution.status = "failed"
+            log_execution_event(db, execution.id, user.id, "failed", f"Erreur backend: {resp.text[:200]}", level="ERROR")
+            db.commit()
+            return send_bot_message(f"Erreur backend : {resp.text}", session.state, {"execution_id_db": execution.id})
+
         data = resp.json()
         database_resources = data.get("database_resources", [])
         cloud_resources = data.get("cloud_resources", [])
         summary = data.get("summary", {})
-        
+
         if not database_resources and not cloud_resources:
+            execution.status = "completed"
+            log_execution_event(db, execution.id, user.id, "completed", "Aucune ressource trouvée")
+            db.commit()
             return send_bot_message("Aucune ressource trouvée.", session.state)
-        
+
+        log_execution_event(
+            db, execution.id, user.id, "phase",
+            f"Trouvé {summary.get('total_unique', 0)} ressources uniques"
+        )
+
         lines = ["Découverte complète des ressources AWS\n"]
         lines.append(f"Résumé: {summary.get('total_unique', 0)} ressources uniques trouvées")
         lines.append(f"   • Base de données: {summary.get('total_db', 0)} instances")
         lines.append(f"   • Découvertes AWS: {summary.get('total_cloud', 0)} instances")
-        
+
         if summary.get('aws_discovery_success'):
             lines.append("   • Synchronisation AWS réussie\n")
         else:
             lines.append("   • Découverte AWS indisponible\n")
-        
+
         if cloud_resources:
             lines.append("Instances AWS (temps réel):")
             for r in cloud_resources:
@@ -1581,20 +1636,24 @@ async def chat_message(
                 ip_display = r.get('public_ip', 'Pas d\'IP publique')
                 lines.append(f"   {r.get('instance_id', 'N/A')} | État: {state_text} | IP: {ip_display}")
             lines.append("")
-        
+
         if database_resources:
             lines.append("Instances trackées localement:")
             for r in database_resources:
                 lines.append(f"   {r['instance_id']} | IP: {r.get('public_ip', 'N/A')} | User: {r['ssh_user']} | Provider: {r['provider']}")
             lines.append("")
-        
+
+        execution.status = "completed"
+        log_execution_event(db, execution.id, user.id, "completed", "Liste des ressources récupérée")
+        db.commit()
+
         available_instances = _resource_instances_for_user()
         session.state = "awaiting_resource_action_selection"
         db.commit()
         return send_bot_message(
             "\n".join(lines),
             "awaiting_resource_action_selection",
-            {"available_instances": available_instances, "resource_actions": ["start", "stop", "delete"]},
+            {"available_instances": available_instances, "resource_actions": ["start", "stop", "delete"], "execution_id_db": execution.id},
         )
     
     elif fast_command == "CANCEL":
@@ -1621,6 +1680,80 @@ async def chat_message(
             {"available_instances": available_instances, "resource_actions": ["start", "stop", "delete"]},
         )
     
+    elif fast_command == "VPC_STATUS":
+        if not has_user_aws_credentials(user.id, db):
+            return redirect_credentials_message()
+
+        execution = models.Execution(
+            user_id=user.id,
+            session_id=session.id,
+            task_type="vpc_status",
+            status="running",
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+        log_execution_event(db, execution.id, user.id, "started", "Diagnostic VPC lancé")
+
+        try:
+            creds = get_user_aws_credentials(user.id, db)
+            if isinstance(creds, dict):
+                access_key = creds.get("access_key_id") or creds.get("AWS_ACCESS_KEY_ID")
+                secret_key = creds.get("secret_access_key") or creds.get("AWS_SECRET_ACCESS_KEY")
+                region = creds.get("region") or "eu-north-1"
+            else:
+                from app.utils.crypto import decrypt as _dec
+                access_key = getattr(creds, "access_key_id", None)
+                secret_enc = getattr(creds, "secret_access_key_encrypted", None)
+                secret_key = _dec(secret_enc) if secret_enc else None
+                region = getattr(creds, "region", None) or "eu-north-1"
+
+            from app.services.vpc_diagnostics import VPCDiagnostics
+            diag = VPCDiagnostics(region=region).run_diagnostics(
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+            )
+
+            log_execution_event(
+                db, execution.id, user.id, "phase",
+                f"VPC status: {diag.get('status', 'unknown')}"
+            )
+
+            vpcs = diag.get("vpcs", [])
+            summary_text = diag.get("summary", "Diagnostic VPC effectué")
+            warnings = diag.get("warnings", [])
+
+            lines = [f"**Diagnostic VPC** — {summary_text}\n"]
+            lines.append(f"Statut: **{diag.get('status', 'unknown').upper()}**\n")
+            lines.append(f"VPCs trouvés: {len(vpcs)}")
+            for vpc in vpcs[:5]:
+                dac = " (DAC)" if vpc.get("dac_managed") else ""
+                lines.append(f"  • `{vpc.get('vpc_id', 'n/a')}` CIDR {vpc.get('cidr', 'n/a')}{dac} — {len(vpc.get('subnets', []))} subnets")
+            if warnings:
+                lines.append("\nAvertissements:")
+                for w in warnings[:3]:
+                    lines.append(f"  ⚠ {w}")
+
+            execution.status = "completed"
+            log_execution_event(db, execution.id, user.id, "completed", "Diagnostic VPC terminé")
+            db.commit()
+
+            return send_bot_message(
+                "\n".join(lines),
+                "awaiting_intent",
+                {"vpc_diagnostic": diag, "execution_id_db": execution.id},
+            )
+
+        except Exception as e:
+            execution.status = "failed"
+            log_execution_event(db, execution.id, user.id, "failed", str(e)[:300], level="ERROR")
+            db.commit()
+            return send_bot_message(
+                f"Erreur lors du diagnostic VPC: {str(e)[:200]}",
+                "awaiting_intent",
+                {"execution_id_db": execution.id},
+            )
+
     elif fast_command == "DEBUG":
         # Simple debug info
         return send_bot_message(
@@ -2788,10 +2921,9 @@ async def chat_message(
         # ============================================================================
         #  P0.5.1 — SSM Status Check Intent (priority check before generic intent detection)
         # ============================================================================
-        logger.info(f"Testing SSM check for: {text[:50]}")
+        logger.info("Testing SSM check for: %s", text[:50])
         if detect_ssm_check_intent(text):
-            logger.info(" SSM check intent detected!")
-            # Get AWS credentials
+            logger.info("SSM check intent detected!")
             creds = get_user_aws_credentials(user.id, db)
             if not creds:
                 return send_bot_message(
@@ -2799,28 +2931,50 @@ async def chat_message(
                     "Configure tes credentials AWS d'abord ou contacte l'admin.",
                     "awaiting_intent"
                 )
-            
+
+            ssm_exec = models.Execution(
+                user_id=user.id,
+                session_id=session.id,
+                task_type="ssm_status",
+                status="running",
+            )
+            db.add(ssm_exec)
+            db.commit()
+            db.refresh(ssm_exec)
+            log_execution_event(db, ssm_exec.id, user.id, "started", "Diagnostic SSM lancé")
+
             try:
-                # Run SSM diagnostics
                 diag, diag_err = _run_ssm_diag(user.id, db)
-                
+
                 if diag_err:
+                    ssm_exec.status = "failed"
+                    log_execution_event(db, ssm_exec.id, user.id, "failed", str(diag_err)[:300], level="ERROR")
+                    db.commit()
                     return send_bot_message(
                         f" Erreur lors du diagnostic SSM: {diag_err}",
-                        "awaiting_intent"
+                        "awaiting_intent",
+                        {"execution_id_db": ssm_exec.id},
                     )
-                
+
                 if not diag:
+                    ssm_exec.status = "failed"
+                    log_execution_event(db, ssm_exec.id, user.id, "failed", "Réponse vide", level="WARNING")
+                    db.commit()
                     return send_bot_message(
                         " Impossible de récupérer le diagnostic SSM.",
-                        "awaiting_intent"
+                        "awaiting_intent",
+                        {"execution_id_db": ssm_exec.id},
                     )
-                
-                # Format response
+
                 total_online = diag.get("total_ssm_online_aws", 0)
                 total_instances = diag.get("total_instances_aws", 0)
-                summary = diag.get("summary", "Diagnostic SSM effectué")
-                
+                summary_ssm = diag.get("summary", "Diagnostic SSM effectué")
+
+                log_execution_event(
+                    db, ssm_exec.id, user.id, "phase",
+                    f"SSM: {total_online}/{total_instances} instances online"
+                )
+
                 if total_online == 0:
                     blocked_summary = _format_block_summary(diag)
                     session.state = "awaiting_ssm_fix_confirm"
@@ -2829,29 +2983,41 @@ async def chat_message(
                         "original_text": text,
                         "blocked_instances": diag.get("blocked_instances", []),
                     })
+                    ssm_exec.status = "completed"
+                    log_execution_event(db, ssm_exec.id, user.id, "completed", f"SSM bloqué: {blocked_summary}", level="WARNING")
                     db.commit()
-                    
+
                     return send_bot_message(
-                        f" Diagnostic SSM:\n{summary}\n"
+                        f" Diagnostic SSM:\n{summary_ssm}\n"
                         f"Blocages: {blocked_summary}\n\n"
                         "Souhaites-tu que je configure automatiquement SSM sur ces VM ? (réponds 'oui')",
                         "awaiting_ssm_fix_confirm",
-                        {"diagnostic": diag}
+                        {"diagnostic": diag, "execution_id_db": ssm_exec.id}
                     )
                 else:
+                    ssm_exec.status = "completed"
+                    log_execution_event(db, ssm_exec.id, user.id, "completed", f"SSM OK: {total_online} instances online")
+                    db.commit()
                     response_text = (
                         f" Diagnostic SSM:\n"
                         f"• Instances AWS trouvées: {total_instances}\n"
                         f"• Instances SSM online: {total_online}\n"
-                        f"• {summary}"
+                        f"• {summary_ssm}"
                     )
-                    return send_bot_message(response_text, "awaiting_intent", {"diagnostic": diag})
-            
+                    return send_bot_message(
+                        response_text, "awaiting_intent",
+                        {"diagnostic": diag, "execution_id_db": ssm_exec.id}
+                    )
+
             except Exception as e:
-                logger.error(f"SSM diagnostic failed: {e}")
+                ssm_exec.status = "failed"
+                log_execution_event(db, ssm_exec.id, user.id, "failed", str(e)[:300], level="ERROR")
+                db.commit()
+                logger.error("SSM diagnostic failed: %s", e)
                 return send_bot_message(
                     f" Erreur lors du diagnostic SSM: {str(e)[:100]}",
-                    "awaiting_intent"
+                    "awaiting_intent",
+                    {"execution_id_db": ssm_exec.id},
                 )
         
         # ============================================================================

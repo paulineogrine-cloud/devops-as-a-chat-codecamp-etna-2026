@@ -70,7 +70,7 @@ def audit_log(
     audit_db = SessionLocal()
     
     try:
-        logger.info(f" audit_log START: {action} ({status})")
+        logger.debug("audit_log START: %s (%s)", action, status)
         
         # Récupérer IP address
         ip_address = "unknown"
@@ -123,13 +123,12 @@ def audit_log(
             }
         )
         audit_db.commit()
-        logger.info(f" audit_log COMMITTED: {action}")
-        
-        logger.debug(f"OK Audit log: {action} ({resource_type}) by user {user_id} - {status}")
+        logger.debug("audit_log COMMITTED: %s", action)
+        logger.debug("Audit log: %s (%s) by user %s - %s", action, resource_type, user_id, status)
         
     except Exception as e:
         # BEST-EFFORT : never crash
-        logger.error(f"ERR audit_log FAILED ({action}): {type(e).__name__}: {str(e)}")
+        logger.error("audit_log FAILED (%s): %s: %s", action, type(e).__name__, str(e))
         try:
             audit_db.rollback()
         except:
@@ -138,6 +137,6 @@ def audit_log(
         # OK Toujours fermer la session indépendante
         try:
             audit_db.close()
-            logger.info(f" audit_log CLOSED: {action}")
+            logger.debug("audit_log CLOSED: %s", action)
         except:
             pass

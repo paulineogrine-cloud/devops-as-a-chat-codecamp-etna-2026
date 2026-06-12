@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import axiosClient from "../api/axiosClient";
+import { useExecutionLogs } from "./useExecutionLogs";
+export type { ExecutionLog } from "./useExecutionLogs";
 
 export type ExecutionStatus = "pending" | "running" | "completed" | "failed";
 
@@ -17,17 +19,23 @@ interface ExecutionPollingState {
   progress: number;
   message: string;
   isPolling: boolean;
+  executionLogs: ReturnType<typeof useExecutionLogs>["logs"];
+  logsDone: boolean;
 }
 
 export function useExecutionPolling(
   executionId: number | null,
   enabled = true,
 ) {
+  const { logs: executionLogs, done: logsDone } = useExecutionLogs(executionId, enabled);
+
   const [state, setState] = useState<ExecutionPollingState>({
     status: "idle",
     progress: 0,
     message: "",
     isPolling: false,
+    executionLogs: [],
+    logsDone: false,
   });
 
   const intervalRef = useRef<number | null>(null);
@@ -55,12 +63,13 @@ export function useExecutionPolling(
         errorsRef.current = 0;
 
         if (!cancelled) {
-          setState({
+          setState((prev) => ({
+            ...prev,
             status,
             progress,
             message,
             isPolling: true,
-          });
+          }));
         }
 
         if (status === "completed" || status === "failed") {
@@ -84,6 +93,8 @@ export function useExecutionPolling(
       progress: 0,
       message: "Démarrage…",
       isPolling: true,
+      executionLogs: [],
+      logsDone: false,
     });
 
     fetchOnce();
@@ -96,5 +107,8 @@ export function useExecutionPolling(
     };
   }, [executionId, enabled]);
 
-  return state;
+  // Synchroniser les logs en dehors du useEffect pour éviter un cycle
+  const stateWithLogs = { ...state, executionLogs, logsDone };
+
+  return stateWithLogs;
 }

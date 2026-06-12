@@ -52,13 +52,12 @@ export function ExecutionProvider({ children }: { children: ReactNode }) {
     [runningExecution],
   );
 
+  // Référence stable : pas de dépendance sur runningExecution pour éviter que le
+  // cleanup useEffect dans Chat.tsx se déclenche spurieusement et remette
+  // executionId à null dès que startExecution change runningExecution.
   const endExecution = useCallback(() => {
-    console.log(
-      "[ExecutionContext] Exécution terminée:",
-      runningExecution?.executionId,
-    );
     setRunningExecution(null);
-  }, [runningExecution]);
+  }, []);
 
   const value: ExecutionContextType = {
     runningExecution,

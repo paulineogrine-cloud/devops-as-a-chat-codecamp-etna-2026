@@ -16,13 +16,15 @@ class ErrorResponse:
     error_message: str  # Message clair pour l'utilisateur
     details: Optional[Dict[str, Any]] = None  # Détails techniques optionnels
     user_action: Optional[str] = None  # Ce que l'utilisateur peut faire
-    
+    correlation_id: Optional[str] = None  # UUID de la requête pour corrélation avec les logs serveur
+
     def to_dict(self):
         return {
             "error_code": self.error_code,
             "error_message": self.error_message,
             "details": self.details or {},
             "user_action": self.user_action,
+            "correlation_id": self.correlation_id,
         }
 
 
@@ -48,9 +50,15 @@ def make_error(
 ) -> ErrorResponse:
     """Factory pour créer une ErrorResponse avec le bon message"""
     message = ERROR_CODES.get(error_code, ERROR_CODES["UNKNOWN_ERROR"])
+    try:
+        from app.core.context import correlation_id_var
+        cid = correlation_id_var.get("") or None
+    except Exception:
+        cid = None
     return ErrorResponse(
         error_code=error_code,
         error_message=message,
         details=details,
         user_action=user_action,
+        correlation_id=cid,
     )
